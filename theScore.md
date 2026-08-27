@@ -94,7 +94,7 @@ To seed or inspect the live weights manually:
 
 ```bash
 cd ReTreever
-tsx harness/score_scripts/scoreMatrix.ts   # seeds if empty; otherwise just prints the live DB weights
+tsx score_scripts/scoreMatrix.ts   # seeds if empty; otherwise just prints the live DB weights
 ```
 
 **Weights are keyed on bare field names** (`geometry`, `latitude`), while `ProjectScoreByFieldTable.fieldName` stores `Table.field` (`LandTable.hectares`). The lookup uses the bare name, so a field name shared by two tables gets the same weight in both.
@@ -439,7 +439,7 @@ model ProjectTable {
 Scoring runs as **local tsx scripts against `DATABASE_MIGRATIONS_DEV_URL`** — no HTTP call, no dev server, no `HELPER_CODE`. (The `/api/score/*` routes still exist but are not how scoring is driven.)
 
 ```
-tsx harness/score_scripts/score_projects.ts   +   tsx harness/score_scripts/score_orgs.ts
+tsx score_scripts/score_projects.ts   +   tsx score_scripts/score_orgs.ts
 
 PHASE 1 — PROJECT SCORING
   For each project:
@@ -489,9 +489,9 @@ Needs `DATABASE_MIGRATIONS_DEV_URL` in `ReTreever/.env`.
 ./CLI.sh score both 500         # custom batch size
 
 # Direct scripts (from ReTreever/, needs DATABASE_MIGRATIONS_DEV_URL)
-tsx harness/score_scripts/scoreMatrix.ts           # seed matrix if empty / print live weights
-tsx harness/score_scripts/score_projects.ts [batch]
-tsx harness/score_scripts/score_orgs.ts [batch] [orgId...]
+tsx score_scripts/scoreMatrix.ts           # seed matrix if empty / print live weights
+tsx score_scripts/score_projects.ts [batch]
+tsx score_scripts/score_orgs.ts [batch] [orgId...]
 ```
 
 There is **one** scoring command. `score_projects_1` / `score_orgs_2` were removed — use the scope argument instead. Ranking is not separate: `rank_projects()` / `rank_orgs()` run automatically at the end of each scoring script.
@@ -639,8 +639,8 @@ Cube is useful as an audit/exploration layer, but it is **not currently the sour
 
 - `ReTreever/prisma/schema.prisma`
 - `ScoreMatrixTable` in the database (the field weights)
-- `harness/score_scripts/score_projects.ts`
-- `harness/score_scripts/score_orgs.ts`
+- `ReTreever/score_scripts/score_projects.ts`
+- `ReTreever/score_scripts/score_orgs.ts`
 
 Important: parts of the Cube model still reference older helper-table names and older field names. Treat Cube queries as convenience checks only until the Cube schema is brought fully in sync with the current Prisma schema.
 

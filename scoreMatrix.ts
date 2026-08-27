@@ -75,7 +75,7 @@ export async function seedScoreMatrixIfEmpty(
 
 /**
  * Standalone entry point.
- * Run: tsx harness/score_scripts/scoreMatrix.ts
+ * Run: tsx score_scripts/scoreMatrix.ts
  *
  * Seeds an empty table, or prints the live DB weights if already populated.
  */
