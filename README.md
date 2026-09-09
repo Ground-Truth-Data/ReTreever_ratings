@@ -4,40 +4,37 @@ This is a **publication, not a package.** It is here so anyone can read exactly
 how a ReTreever transparency score and percentile rank are calculated, and
 check the arithmetic against their own data.
 
+The scripts in this repo are a published snapshot. They are maintained in the
+private parent repo at `ReTreever/score_scripts/`, which also holds the
+long-form methodology (`theScore.md`) and the claim-normalization rules
+(`CLAIM_METHODOLOGY.md`).
+
 ## What a score is
 
-The score is a measure of reforestation stakeholder transparency. It measures
-the disparity between the claimed total trees planted. In other words, its a measure of what's verifiable.
+The score is a measure of reforestation stakeholder transparency — the gap
+between what an organization claims and what an outside reader can actually
+verify.
 
-For example, a stakeholder claims to have planted one million trees. How much
-publicly available evidence is there? Verifiability in that claim?
+A stakeholder claims to have planted one million trees. How much publicly
+available evidence is there?
 
-- Are there polygons available? Do the polygons contain a meaningful
-  concentration of planted trees — for example, 1,200 stems per hectare of tree
-  planted? Or is it just a dot on a map - that could mean the
-  entire country?
-- Are there more data attributes available? How many trees of what species are planted in which
+- Are there polygons? Do they contain a meaningful concentration of planted
+  trees — say 1,200 stems per hectare — or is it a single dot on a map that
+  could mean the entire country?
+- What other attributes are published? How many trees of what species, on which
   site? Where did the trees come from?
-- Are the other stakeholders listed?
-- Is there survey data available?
-- When was it planted? Why was it planted? Who planted it? and so on...
+- Are the other stakeholders listed? Is there survey data?
+- When was it planted, why, and by whom?
 
-Those attributes are weighted based on their value. For example, polygons are
-worth a lot more than other attributes.
+Those attributes are weighted by value — polygons are worth far more than the
+rest. Totals are summed per project ("what") and aggregated per vendor ("who"),
+then measured against other organizations in the same stakeholder group, so
+nurseries are compared against nurseries.
 
-The totals are summed up per project — "what" — and aggregated per vendor —
-"who". Then all those stats are measured against other organizations in the
-same stakeholder group. For example, nurseries are compared against each other
-to find who is in the top percentile, and who is at the bottom, and the middle,
-etc.
-
-A rating of 90 — the 90th percentile — is extremely transparent. Their claims
-are greatly verifiable.
-
-An organization with a rating of 10 — the 10th percentile — is opaque. Their
-work is unverifiable. They can make any claims they want, but there's little
-evidence to show if its true or not, to show the quality of the work, if the
-trees survived etc. We have no idea; it's just a claim with no evidence.
+A rating of 90 — the 90th percentile — is extremely transparent; the claims are
+greatly verifiable. A rating of 10 is opaque: the work is unverifiable, and the
+claim stands with little evidence of whether it is true, whether the quality was
+there, or whether the trees survived.
 
 `scoreMatrix.ts` is the whole weighting, in one table. Geometry — a real
 polygon proving the site physically exists — is worth 20 points. GPS
@@ -59,9 +56,6 @@ So a rank of 90 means the project scores higher than 90% of the others in the
 same set. `score_orgs.ts` computes two: overall, and within stakeholder
 category — a small NGO is ranked against small NGOs, not against a government
 programme.
-
-`theScore.md` is the long-form methodology; `CLAIM_METHODOLOGY.md` covers how
-claims are treated.
 
 ## Why you cannot run this as-is
 
