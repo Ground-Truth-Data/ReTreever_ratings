@@ -95,6 +95,7 @@ export async function score_projects(projectKeys: string[]): Promise<void> {
             fieldName: string;
             isAwarded: boolean;
             pointsAvailable: number;
+            platformId: string | null;
         }> = [];
 
         const allTables = {
@@ -123,6 +124,18 @@ export async function score_projects(projectKeys: string[]): Promise<void> {
                         fieldName: `${tableName}.${fieldName}`,
                         isAwarded: awarded,
                         pointsAvailable: points,
+                        // STAMPED AT WRITE TIME, from the project this row is
+                        // scoring. The column was backfilled from the key's
+                        // first letter, and a backfill only covers rows that
+                        // already exist — without this every row written after
+                        // it would be null, so the dashboards that group by
+                        // platform would quietly stop seeing new scores.
+                        //
+                        // Copied rather than re-derived from `projectKey`: the
+                        // project row is the authority on which platform it
+                        // belongs to, and parsing the key again here would be
+                        // a second opinion free to disagree with it.
+                        platformId: project.platformId,
                     });
                 }
             }
