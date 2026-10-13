@@ -1,0 +1,20 @@
+{
+	"name": "@ground-truth/retreever-ratings",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "ReTreever's transparency scores and ranks: the scorers, their weights and their tests.",
+	"dependencies": {
+		"@prisma/adapter-pg": "^7.1.0",
+		"pg": "^8.16.3"
+	},
+	"devDependencies": {
+		"@types/pg": "^8.15.6",
+		"tsx": "^4.20.6",
+		"vitest": "^5.0.1"
+	},
+	"scripts": {
+		"test": "vitest run"
+	},
+	"_why": "Never published. A member of its parent's npm workspace, beside it on disk: the scorers import the parent's generated Prisma client and run lock through the `$parent` alias, so they run only from inside that workspace. `type: module` is load-bearing — the CLI entry points use top-level await."
+}
