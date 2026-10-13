@@ -1,252 +1,151 @@
 #!/usr/bin/env tsx
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { PrismaPg } from "@prisma/adapter-pg";
-import pg from "pg";
-import { PrismaClient } from "../../prisma/generated/prisma-postgres/client.js";
+import {
+	orgWhere,
+	propagateDirtyToParents,
+	rankOrgs,
+	scoreOneOrg,
+} from "./orgScore.js";
+import { takeRunLock } from "$parent/src/lib/server/runLock.js";
+import { scoreInBatches, withRetry } from "./scoreRun.js";
+import { closeScoreDb, scoreConfig as config, scoreDb } from "./scoreDb.js";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const config = JSON.parse(
-    readFileSync(join(__dirname, "scoreConfig.json"), "utf8"),
-);
-
-const connectionString = process.env.GC_RT_supabase_dev_session;
-if (!connectionString) throw new Error("GC_RT_supabase_dev_session is not set!");
-
-const pool = new pg.Pool({
-    connectionString,
-    max: config.pool.maxConnections,
-    ssl: { rejectUnauthorized: false },
-});
-const adapter = new PrismaPg(pool);
-const prisma = new PrismaClient({ adapter });
-
+/** Returns the organizationKeys that failed even after retries — never throws
+ * for one org. */
 export async function score_orgs(
-    orgIds?: string[],
-    batchSize?: number,
-): Promise<void> {
-    const orgsToScore = orgIds
-        ? await prisma.organizationTable.findMany({
-              where: {
-                  organizationKey: { in: orgIds },
-                  scoreOrgFlag: true,
-              },
-              select: { organizationKey: true },
-          })
-        : await prisma.organizationTable.findMany({
-              where: { scoreOrgFlag: true },
-              select: { organizationKey: true },
-              take: batchSize,
-              orderBy: { scoreLastUpdatedAt: "asc" },
-          });
+	orgIds?: string[],
+	batchSize?: number,
+	full = false,
+): Promise<string[]> {
+	const prisma = scoreDb();
+	const orgsToScore = orgIds
+		? await prisma.organizationTable.findMany({
+				where: orgWhere(full, orgIds),
+				select: { organizationKey: true },
+			})
+		: await prisma.organizationTable.findMany({
+				where: orgWhere(full),
+				select: { organizationKey: true },
+				take: batchSize,
+				orderBy: { scoreLastUpdatedAt: "asc" },
+			});
 
-    console.log(`\n🏢 Scoring ${orgsToScore.length} dirty organizations...`);
+	console.log(`\n🏢 Scoring ${orgsToScore.length} dirty organizations...`);
 
-    for (const { organizationKey } of orgsToScore) {
-        const childOrgs = await prisma.organizationTable.findMany({
-            where: { organizationKey },
-            select: { organizationKey: true },
-        });
+	const failed: string[] = [];
+	for (const { organizationKey } of orgsToScore) {
+		try {
+			await withRetry(() => scoreOneOrg(prisma, organizationKey), `score ${organizationKey}`);
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			console.error(`❌ Giving up on ${organizationKey} after retries: ${msg}`);
+			failed.push(organizationKey);
+		}
+	}
 
-        const localOrgIds = childOrgs.map((lo) => lo.organizationKey);
-        if (localOrgIds.length === 0) continue;
-
-        const projectScores = await prisma.$queryRaw<
-            Array<{
-                scoreProject: number;
-                scorePointsAvailable: number;
-                scorePointsScored: number;
-            }>
-        >`
-            SELECT DISTINCT 
-                pt."scoreProject",
-                pt."scorePointsAvailable",
-                pt."scorePointsScored"
-            FROM "ProjectTable" pt
-            INNER JOIN "StakeholderTable" st ON pt."projectKey" = st."projectKey"
-            WHERE st."organizationKey" = ANY(${localOrgIds}::text[])
-              AND pt."scoreProject" IS NOT NULL
-        `;
-
-        const scoreOrgPreClaim =
-            projectScores.length > 0
-                ? projectScores.reduce(
-                      (sum, p) => sum + Number(p.scoreProject),
-                      0,
-                  ) / projectScores.length
-                : 0;
-        const scorePointsAvailable = projectScores.reduce(
-            (sum, p) => sum + Number(p.scorePointsAvailable || 0),
-            0,
-        );
-        const scorePointsScored = projectScores.reduce(
-            (sum, p) => sum + Number(p.scorePointsScored || 0),
-            0,
-        );
-
-        const claims = await prisma.claimTable.findMany({
-            where: { organizationKey },
-            select: { claimQty: true },
-        });
-        const scoreSumClaimed = claims.reduce(
-            (sum, c) => sum + (c.claimQty || 0),
-            0,
-        );
-
-        const plantings = await prisma.$queryRaw<Array<{ plantedQty: number }>>`
-            SELECT p."plantedQty"
-            FROM "PlantingTable" p
-            INNER JOIN "ProjectTable" pt ON p."projectKey" = pt."projectKey"
-            INNER JOIN "StakeholderTable" st ON pt."projectKey" = st."projectKey"
-            WHERE st."organizationKey" = ANY(${localOrgIds}::text[])
-              AND p."plantedQty" IS NOT NULL
-        `;
-        const scoreSumPlantedQty = plantings.reduce(
-            (sum, p) => sum + (p.plantedQty || 0),
-            0,
-        );
-
-        const scoreSumUndisclosed = scoreSumClaimed - scoreSumPlantedQty;
-        const ratioDisclosure =
-            scoreSumClaimed > 0 ? scoreSumPlantedQty / scoreSumClaimed : 1.0;
-        const scoreOrgFinal = scoreOrgPreClaim * ratioDisclosure;
-
-        const stakeholderCategories = await prisma.$queryRaw<
-            Array<{ stakeholderCategory: string; count: bigint }>
-        >`
-            SELECT st."stakeholderCategory", COUNT(*) as count
-            FROM "StakeholderTable" st
-            WHERE st."organizationKey" = ANY(${localOrgIds}::text[])
-              AND st."stakeholderCategory" IS NOT NULL
-            GROUP BY st."stakeholderCategory"
-            ORDER BY count DESC
-            LIMIT 1
-        `;
-        const primaryStakeholderCategory =
-            stakeholderCategories[0]?.stakeholderCategory || null;
-
-        await prisma.organizationTable.update({
-            where: { organizationKey },
-            data: {
-                scoreOrgPreClaim,
-                scorePointsAvailable,
-                scorePointsScored,
-                scoreSumClaimed,
-                scoreSumPlantedQty,
-                scoreSumUndisclosed,
-                scoreOrgFinal,
-                primaryStakeholderCategory,
-                scoreLastUpdatedAt: new Date(),
-                scoreOrgFlag: false,
-            },
-        });
-    }
-
-    console.log(`✅ Scored ${orgsToScore.length} organizations`);
+	console.log(
+		`✅ Scored ${orgsToScore.length - failed.length}/${orgsToScore.length} organizations` +
+			(failed.length ? ` (${failed.length} failed — left flagged dirty for a later run)` : ""),
+	);
+	return failed;
 }
 
-/**
- * Re-rank ALL orgs by percentile (overall + partitioned by stakeholder type).
- * Same cost profile as rank_projects(): global, one-shot SQL, ~1s. Safe to
- * call repeatedly.
- */
-export async function rank_orgs(): Promise<void> {
-    console.log("\n📊 Ranking organizations...");
+/** The org run `npm run score` and Foundr's orchestrator share: a dirty child
+ * dirties its parent, the dirty rows (every row with `full`) are scored in
+ * batches, then every org is re-ranked. Returns the keys that failed. */
+export async function scoreAndRankOrgs(
+	full = false,
+	batchSize: number = config.batch.organizations.defaultSize,
+): Promise<string[]> {
+	if (full) {
+		console.log(
+			"\n⚠️  --full: rescoring EVERY organization, ignoring scoreOrgFlag.",
+		);
+	}
 
-    await prisma.$executeRawUnsafe(`
-        UPDATE "OrganizationTable" ot
-        SET "scoreRankOverall" = ranked."scoreRankOverall"
-        FROM (
-            SELECT
-                "organizationKey",
-                ROUND(PERCENT_RANK() OVER (ORDER BY "scoreOrgFinal") * 100)::int AS "scoreRankOverall"
-            FROM "OrganizationTable"
-            WHERE "scoreOrgFinal" IS NOT NULL
-        ) ranked
-        WHERE ot."organizationKey" = ranked."organizationKey"
-    `);
+	const prisma = scoreDb();
+	const dirtiedParents = await propagateDirtyToParents(prisma);
+	if (dirtiedParents > 0) {
+		console.log(`\n⬆️  ${dirtiedParents} parent organization(s) dirtied by a dirty child`);
+	}
 
-    await prisma.$executeRawUnsafe(`
-        UPDATE "OrganizationTable" ot
-        SET "scoreRankByCategory" = ranked."scoreRankByCategory"
-        FROM (
-            SELECT
-                "organizationKey",
-                ROUND(PERCENT_RANK() OVER (
-                    PARTITION BY "primaryStakeholderCategory"
-                    ORDER BY "scoreOrgFinal"
-                ) * 100)::int AS "scoreRankByCategory"
-            FROM "OrganizationTable"
-            WHERE "primaryStakeholderCategory" IS NOT NULL
-              AND "scoreOrgFinal" IS NOT NULL
-        ) ranked
-        WHERE ot."organizationKey" = ranked."organizationKey"
-    `);
+	const where = orgWhere(full);
 
-    console.log("✅ Organizations ranked");
+	// --full snapshots the target list once: score_orgs() stamps
+	// scoreLastUpdatedAt, so a cursor on it would chase a moving target.
+	const fullTargetKeys = full
+		? (
+				await prisma.organizationTable.findMany({
+					select: { organizationKey: true },
+					where,
+					orderBy: [{ scoreLastUpdatedAt: "asc" }, { organizationKey: "asc" }],
+				})
+			).map((o) => o.organizationKey)
+		: null;
+
+	const totalToScore = fullTargetKeys
+		? fullTargetKeys.length
+		: await prisma.organizationTable.count({ where });
+	console.log(
+		`\n📋 Found ${totalToScore} organization${full ? "" : " dirty"} to score`,
+	);
+
+	const { failed } = await scoreInBatches(
+		full ? "organizations" : "dirty organizations",
+		totalToScore,
+		async (tried, failed) =>
+			fullTargetKeys
+				? fullTargetKeys.slice(tried, tried + batchSize)
+				: (
+						await prisma.organizationTable.findMany({
+							where: { ...where, organizationKey: { notIn: failed } },
+							select: { organizationKey: true },
+							take: batchSize,
+							orderBy: { scoreLastUpdatedAt: "asc" },
+						})
+					).map((o) => o.organizationKey),
+		(keys) => score_orgs(keys, batchSize, full),
+	);
+	if (failed.length > 0 && full) {
+		console.warn(
+			"   --full doesn't track these via a flag — re-run the same --full command to retry just what's still missing.",
+		);
+	}
+
+	await rankOrgs(prisma);
+	return failed;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-    const args = process.argv.slice(2);
-    const batchSize = args[0]
-        ? Number.parseInt(args[0], 10)
-        : config.batch.organizations.defaultSize;
-    const testOrgIds = args.slice(1);
+	const rawArgs = process.argv.slice(2);
+	// --full ignores scoreOrgFlag and rescores every organization.
+	const full = rawArgs.includes("--full");
+	const args = rawArgs.filter((a) => a !== "--full");
+	const batchSize = args[0]
+		? Number.parseInt(args[0], 10)
+		: config.batch.organizations.defaultSize;
+	const testOrgIds = args.slice(1);
 
-    // If specific org IDs provided, just score those
-    if (testOrgIds.length > 0) {
-        await score_orgs(testOrgIds, batchSize);
-        await rank_orgs();
-        await pool.end();
-        process.exit(0);
-    }
-
-    // Count total dirty orgs upfront
-    const totalDirty = await prisma.organizationTable.count({
-        where: { scoreOrgFlag: true },
-    });
-    console.log(`\n📋 Found ${totalDirty} dirty organizations to score`);
-
-    if (totalDirty === 0) {
-        console.log("✅ No dirty organizations to score");
-        await pool.end();
-        process.exit(0);
-    }
-
-    let totalScored = 0;
-    let batchNum = 0;
-
-    while (true) {
-        const orgsToScore = await prisma.organizationTable.findMany({
-            where: { scoreOrgFlag: true },
-            select: { organizationKey: true },
-            take: batchSize,
-            orderBy: { scoreLastUpdatedAt: "asc" },
-        });
-
-        if (orgsToScore.length === 0) {
-            console.log(
-                `\n✅ All dirty organizations scored. Total: ${totalScored}`,
-            );
-            break;
-        }
-
-        batchNum++;
-        const remaining = totalDirty - totalScored;
-        console.log(
-            `\n📦 Batch ${batchNum}: ${orgsToScore.length} organizations (${remaining} remaining)`,
-        );
-
-        await score_orgs(
-            orgsToScore.map((o) => o.organizationKey),
-            batchSize,
-        );
-        totalScored += orgsToScore.length;
-    }
-
-    await rank_orgs();
-    await pool.end();
-    process.exit(0);
+	const lock = await takeRunLock(`score_orgs${full ? " --full" : ""}`).catch((e: Error) => {
+		console.error(e.message);
+		process.exit(1);
+	});
+	try {
+		if (testOrgIds.length > 0) {
+			const prisma = scoreDb();
+			await propagateDirtyToParents(prisma);
+			const failed = await score_orgs(testOrgIds, batchSize, full);
+			if (failed.length > 0) {
+				console.warn(
+					`\n⚠️  ${failed.length} organization(s) failed after retries:\n  ${failed.join("\n  ")}`,
+				);
+			}
+			await rankOrgs(prisma);
+		} else {
+			await scoreAndRankOrgs(full, batchSize);
+		}
+	} finally {
+		await lock.release();
+		await closeScoreDb();
+	}
+	process.exit(0);
 }

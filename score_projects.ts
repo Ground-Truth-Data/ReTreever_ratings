@@ -1,195 +1,74 @@
 #!/usr/bin/env tsx
-import crypto from "node:crypto";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { PrismaPg } from "@prisma/adapter-pg";
-import pg from "pg";
-import { PrismaClient } from "../../prisma/generated/prisma-postgres/client.js";
+import { fieldPoints, scoreOneProject } from "./projectScore.js";
+import { takeRunLock } from "$parent/src/lib/server/runLock.js";
+import { scoreInBatches, withRetry } from "./scoreRun.js";
+import { closeScoreDb, scoreConfig as config, scoreDb } from "./scoreDb.js";
 import { seedScoreMatrixIfEmpty } from "./scoreMatrix.js";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const config = JSON.parse(
-    readFileSync(join(__dirname, "scoreConfig.json"), "utf8"),
-);
-
-const connectionString = process.env.GC_RT_supabase_dev_session;
-if (!connectionString) throw new Error("GC_RT_supabase_dev_session is not set!");
-
-const pool = new pg.Pool({
-    connectionString,
-    max: config.pool.maxConnections,
-    ssl: { rejectUnauthorized: false },
-});
-const adapter = new PrismaPg(pool);
-const prisma = new PrismaClient({ adapter });
 
 const DEFAULT_FIELD_POINTS = config.defaults.fieldPoints;
 
-function isSystemField(fieldName: string): boolean {
-    return (
-        fieldName.endsWith("Key") ||
-        fieldName.endsWith("At") ||
-        fieldName.endsWith("By") ||
-        fieldName === "platformId" ||
-        fieldName === "randomJson" ||
-        fieldName === "errored" ||
-        fieldName === "created" ||
-        fieldName === "updated" ||
-        fieldName === "duplicated" ||
-        fieldName === "errorMessage" ||
-        fieldName === "parentTable" ||
-        fieldName === "parentKey"
-    );
-}
+const SCORE_CONCURRENCY = Math.max(
+	1,
+	Number.parseInt(process.env.SCORE_CONCURRENCY ?? "", 10) ||
+		config.pool.scoreConcurrency,
+);
 
-/**
- * Load the live field weights from ScoreMatrixTable — the source of truth.
- *
- * Bootstraps the table from scoreMatrix.ts if (and only if) it is empty, so a
- * run can never silently score with a flat matrix where every field is worth
- * 1pt and `geometry` (normally 20) is no more valuable than a text blurb.
- * A populated table is never modified here.
- */
+// Seeds from scoreMatrix.ts only when empty — a populated table is never modified here.
 async function loadScoreMatrix(): Promise<Map<string, number>> {
-    await seedScoreMatrixIfEmpty(prisma);
+	await seedScoreMatrixIfEmpty(scoreDb());
 
-    const rows = await prisma.scoreMatrixTable.findMany({
-        select: { fieldName: true, pointsAvailable: true },
-    });
-    return new Map(rows.map((r) => [r.fieldName, r.pointsAvailable]));
+	const rows = await scoreDb().scoreMatrixTable.findMany({
+		select: { fieldName: true, pointsAvailable: true },
+	});
+	return new Map(rows.map((r) => [r.fieldName, r.pointsAvailable]));
 }
 
-function getFieldPoints(
-    fieldName: string,
-    scoreMatrix: Map<string, number>,
-): number {
-    if (isSystemField(fieldName)) return 0;
-    return scoreMatrix.get(fieldName) ?? DEFAULT_FIELD_POINTS;
+// Returns projectKeys that failed even after retries — never throws for one project, so a bad row can't take a long run down.
+export async function score_projects(projectKeys: string[]): Promise<string[]> {
+	console.log(
+		`\n📊 Scoring ${projectKeys.length} dirty projects, ${SCORE_CONCURRENCY} at a time...`,
+	);
+	const points = fieldPoints(await loadScoreMatrix(), DEFAULT_FIELD_POINTS);
+
+	const failed: string[] = [];
+	// Workers share only the pool and the orgs two projects have in common: both
+	// may set the same scoreOrgFlag, and a deadlock there leaves the project
+	// flagged for the next run.
+	let cursor = 0;
+	async function worker(): Promise<void> {
+		while (cursor < projectKeys.length) {
+			const projectKey = projectKeys[cursor++];
+			try {
+				await withRetry(
+					() => scoreOneProject(scoreDb(), projectKey, points),
+					`score ${projectKey}`,
+				);
+			} catch (e) {
+				const msg = e instanceof Error ? e.message : String(e);
+				console.error(`❌ Giving up on ${projectKey} after retries: ${msg}`);
+				failed.push(projectKey);
+			}
+		}
+	}
+	await Promise.all(
+		Array.from(
+			{ length: Math.min(SCORE_CONCURRENCY, projectKeys.length) },
+			worker,
+		),
+	);
+
+	console.log(
+		`✅ Scored ${projectKeys.length - failed.length}/${projectKeys.length} projects` +
+			(failed.length ? ` (${failed.length} failed — left flagged dirty for a later run)` : ""),
+	);
+	return failed;
 }
 
-export async function score_projects(projectKeys: string[]): Promise<void> {
-    console.log(`\n📊 Scoring ${projectKeys.length} dirty projects...`);
-    const scoreMatrix = await loadScoreMatrix();
-
-    for (const projectKey of projectKeys) {
-        const project = await prisma.projectTable.findUnique({
-            where: { projectKey },
-            include: {
-                LandTable: true,
-                CropTable: true,
-                PlantingTable: true,
-                MiscTable: true,
-                StakeholderTable: true,
-                SourceTable: true,
-            },
-        });
-
-        if (!project) continue;
-
-        const granularScores: Array<{
-            granularProjectScoreId: string;
-            projectKey: string;
-            pointsAwarded: number;
-            fieldName: string;
-            isAwarded: boolean;
-            pointsAvailable: number;
-            platformId: string | null;
-        }> = [];
-
-        const allTables = {
-            ProjectTable: [project],
-            LandTable: project.LandTable || [],
-            CropTable: project.CropTable || [],
-            PlantingTable: project.PlantingTable || [],
-            MiscTable: project.MiscTable || [],
-            StakeholderTable: project.StakeholderTable || [],
-            SourceTable: project.SourceTable || [],
-        };
-
-        for (const [tableName, records] of Object.entries(allTables)) {
-            for (const record of records) {
-                for (const [fieldName, value] of Object.entries(record)) {
-                    const points = getFieldPoints(fieldName, scoreMatrix);
-                    if (points === 0) continue;
-
-                    const awarded =
-                        value !== null && value !== undefined && value !== "";
-
-                    granularScores.push({
-                        granularProjectScoreId: crypto.randomUUID(),
-                        projectKey,
-                        pointsAwarded: awarded ? points : 0,
-                        fieldName: `${tableName}.${fieldName}`,
-                        isAwarded: awarded,
-                        pointsAvailable: points,
-                        // STAMPED AT WRITE TIME, from the project this row is
-                        // scoring. The column was backfilled from the key's
-                        // first letter, and a backfill only covers rows that
-                        // already exist — without this every row written after
-                        // it would be null, so the dashboards that group by
-                        // platform would quietly stop seeing new scores.
-                        //
-                        // Copied rather than re-derived from `projectKey`: the
-                        // project row is the authority on which platform it
-                        // belongs to, and parsing the key again here would be
-                        // a second opinion free to disagree with it.
-                        platformId: project.platformId,
-                    });
-                }
-            }
-        }
-
-        await prisma.projectScoreByFieldTable.deleteMany({
-            where: { projectKey },
-        });
-        if (granularScores.length > 0) {
-            await prisma.projectScoreByFieldTable.createMany({
-                data: granularScores,
-            });
-        }
-
-        const scorePointsAvailable = granularScores.reduce(
-            (sum, s) => sum + s.pointsAvailable,
-            0,
-        );
-        const scorePointsScored = granularScores
-            .filter((s) => s.isAwarded)
-            .reduce((sum, s) => sum + s.pointsAwarded, 0);
-        const scoreProject =
-            scorePointsAvailable > 0
-                ? scorePointsScored / scorePointsAvailable
-                : 0;
-
-        await prisma.projectTable.update({
-            where: { projectKey },
-            data: {
-                scoreProject,
-                scorePointsAvailable,
-                scorePointsScored,
-                scoreLastUpdatedAt: new Date(),
-                scoreProjectFlag: false,
-            },
-        });
-    }
-
-    console.log(`✅ Scored ${projectKeys.length} projects`);
-}
-
-/**
- * Re-rank ALL projects by percentile. Cheap: one UPDATE ... PERCENT_RANK()
- * statement covering the whole table, ~1s regardless of project count.
- *
- * Because ranking is global and nearly free while scoring is per-project and
- * slow, the correct cadence is "score only what changed, then re-rank
- * everything" — that keeps percentiles exact without a full rescore.
- * Safe to call repeatedly.
- */
+// One PERCENT_RANK() UPDATE (~1s) — ranking is cheap and global, scoring is slow and per-project, so score what changed then re-rank everything.
 export async function rank_projects(): Promise<void> {
-    console.log("\n📊 Ranking projects...");
+	console.log("\n📊 Ranking projects...");
 
-    await prisma.$executeRawUnsafe(`
+	await scoreDb().$executeRawUnsafe(`
         UPDATE "ProjectTable" pt
         SET "scoreProjectRank" = ranked."scoreProjectRank"
         FROM (
@@ -203,63 +82,87 @@ export async function rank_projects(): Promise<void> {
         WHERE pt."projectKey" = ranked."projectKey"
     `);
 
-    console.log("✅ Projects ranked");
+	console.log("✅ Projects ranked");
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-    const args = process.argv.slice(2);
-    const batchSize = args[0]
-        ? Number.parseInt(args[0], 10)
-        : config.batch.projects.defaultSize;
+	const rawArgs = process.argv.slice(2);
+	// --full ignores scoreProjectFlag and rescores every project — for landing a scoring-logic change on already-clean rows.
+	const full = rawArgs.includes("--full");
+	const args = rawArgs.filter((a) => a !== "--full");
+	const batchSize = args[0]
+		? Number.parseInt(args[0], 10)
+		: config.batch.projects.defaultSize;
 
-    // Count total dirty projects upfront
-    const totalDirty = await prisma.projectTable.count({
-        where: {
-            deletedAt: null,
-            scoreProjectFlag: true,
-        },
-    });
-    console.log(`\n📋 Found ${totalDirty} dirty projects to score`);
+	const lock = await takeRunLock(`score_projects${full ? " --full" : ""}`).catch((e: Error) => {
+		console.error(e.message);
+		process.exit(1);
+	});
+	try {
+		await scoreAll(full, batchSize);
+	} finally {
+		await lock.release();
+		await closeScoreDb();
+	}
+	process.exit(0);
+}
 
-    if (totalDirty === 0) {
-        console.log("✅ No dirty projects to score");
-        await pool.end();
-        process.exit(0);
-    }
+async function scoreAll(full: boolean, batchSize: number): Promise<void> {
+	const where = full
+		? { deletedAt: null }
+		: { deletedAt: null, scoreProjectFlag: true };
 
-    let totalScored = 0;
-    let batchNum = 0;
+	if (full) {
+		console.log(
+			"\n⚠️  --full: rescoring EVERY project, ignoring scoreProjectFlag.",
+		);
+	}
 
-    // Loop until no more dirty projects
-    while (true) {
-        const projectsToScore = await prisma.projectTable.findMany({
-            select: { projectKey: true },
-            where: {
-                deletedAt: null,
-                scoreProjectFlag: true,
-            },
-            take: batchSize,
-            orderBy: { scoreLastUpdatedAt: "asc" },
-        });
+	// --full snapshots the target list once: scoring stamps scoreLastUpdatedAt, so a per-batch query would chase a moving target.
+	// Dirty mode re-queries: a scored row drops out via scoreProjectFlag, a failed one via notIn.
+	const fullTargetKeys = full
+		? (
+				await scoreDb().projectTable.findMany({
+					select: { projectKey: true },
+					where,
+					orderBy: [{ scoreLastUpdatedAt: "asc" }, { projectKey: "asc" }],
+				})
+			).map((p) => p.projectKey)
+		: null;
 
-        if (projectsToScore.length === 0) {
-            console.log(
-                `\n✅ All dirty projects scored. Total: ${totalScored}`,
-            );
-            break;
-        }
+	const totalToScore = fullTargetKeys
+		? fullTargetKeys.length
+		: await scoreDb().projectTable.count({ where });
+	console.log(
+		`\n📋 Found ${totalToScore} project${full ? "" : " dirty"} to score`,
+	);
 
-        batchNum++;
-        const remaining = totalDirty - totalScored;
-        console.log(
-            `\n📦 Batch ${batchNum}: ${projectsToScore.length} projects (${remaining} remaining)`,
-        );
+	if (totalToScore === 0) {
+		console.log(full ? "✅ No projects to score" : "✅ No dirty projects to score");
+		return;
+	}
 
-        await score_projects(projectsToScore.map((p) => p.projectKey));
-        totalScored += projectsToScore.length;
-    }
+	const { failed } = await scoreInBatches(
+		full ? "projects" : "dirty projects",
+		totalToScore,
+		async (tried, failed) =>
+			fullTargetKeys
+				? fullTargetKeys.slice(tried, tried + batchSize)
+				: (
+						await scoreDb().projectTable.findMany({
+							select: { projectKey: true },
+							where: { ...where, projectKey: { notIn: failed } },
+							take: batchSize,
+							orderBy: { scoreLastUpdatedAt: "asc" },
+						})
+					).map((p) => p.projectKey),
+		score_projects,
+	);
+	if (failed.length > 0 && full) {
+		console.warn(
+			"   --full doesn't track these via a flag — re-run the same --full command to retry just what's still missing (already-scored rows sort to the back of a fresh snapshot).",
+		);
+	}
 
-    await rank_projects();
-    await pool.end();
-    process.exit(0);
+	await rank_projects();
 }

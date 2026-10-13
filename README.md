@@ -1,13 +1,9 @@
 # ReTreever ratings — how a score is computed
 
-This is a **publication, not a package.** It is here so anyone can read exactly
-how a ReTreever transparency score and percentile rank are calculated, and
-check the arithmetic against their own data.
-
-The scripts in this repo are a published snapshot. They are maintained in the
-private parent repo at `ReTreever/score_scripts/`, which also holds the
-long-form methodology (`theScore.md`) and the claim-normalization rules
-(`CLAIM_METHODOLOGY.md`).
+This is where ReTreever's transparency scores and percentile ranks are
+computed: the scorers are maintained here and run from here, in the open, so
+anyone can read exactly how a score is calculated and check the arithmetic
+against their own data.
 
 ## What a score is
 
@@ -53,21 +49,27 @@ ROUND(PERCENT_RANK() OVER (ORDER BY "scoreProject") * 100)::int
 ```
 
 So a rank of 90 means the project scores higher than 90% of the others in the
-same set. `score_orgs.ts` computes two: overall, and within stakeholder
-category — a small NGO is ranked against small NGOs, not against a government
-programme.
+same set. `orgScore.ts` (run by `score_orgs.ts`) computes two over live
+orgs: overall, and within stakeholder category — a small NGO is ranked
+against small NGOs, not against a government programme.
 
-## Why you cannot run this as-is
+## Why it runs only inside ReTreever's workspace
 
-`score_orgs.ts` and `score_projects.ts` read and write ReTreever's production
-database through a generated Prisma client that lives in the private parent
-repo. Neither the client nor the database ships here, and neither should.
+`score_projects.ts` and `score_orgs.ts` read and write ReTreever's database
+through the Prisma client generated in the private parent repo, and take the
+parent's run lock so that only one writer touches the database at a time. Both
+are imported through the `$parent` alias, which resolves only when this repo
+sits beside its parent in that workspace. Neither the client nor the database
+ships here, and neither should.
 
 That is deliberate. The point of publishing is that the **method** is
-inspectable — the weights, the SQL, the reasoning. Handing out a runnable
-copy of our scoring pipeline is a different thing, and not one we are doing.
+inspectable — the weights, the SQL, the reasoning — not that a copy of the
+pipeline runs anywhere.
 
 `scoreMatrix.ts` is the exception: pure data with no imports. Read it directly.
+The pure scoring functions (`projectScore.ts`, `orgScore.ts`, `subtree.ts`,
+`scoreRun.ts`) are covered by the `*.test.ts` files beside them, which run
+against stubs with no database.
 
 ## The database is the source of truth for weights
 
