@@ -9,7 +9,7 @@ describe("fieldPoints", () => {
 		expect(points("geometry")).toBe(20);
 		expect(points("hectares")).toBe(1);
 		expect(points("isQualityPass")).toBe(1);
-		for (const f of ["projectKey", "createdAt", "editedBy", "platformId", "parentTable", "parentKey", "randomJson"])
+		for (const f of ["projectKey", "createdAt", "editedBy", "platformId", "parentTable", "parentKey", "randomJson", "provenance"])
 			expect(points(f)).toBe(0);
 	});
 

@@ -32,6 +32,8 @@ export function isSystemField(fieldName: string): boolean {
 		fieldName === "isParent" ||
 		fieldName === "platformId" ||
 		fieldName === "randomJson" ||
+		// Where the map read each value, not a value the platform disclosed.
+		fieldName === "provenance" ||
 		fieldName === "errored" ||
 		fieldName === "created" ||
 		fieldName === "updated" ||
