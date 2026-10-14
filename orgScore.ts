@@ -3,7 +3,12 @@ import { MAX_DEPTH, orgSubtree } from "./subtree.js";
 
 export type OrgScoreDb = Pick<
 	PrismaClient,
-	"organizationTable" | "claimTable" | "$queryRaw" | "$executeRaw" | "$executeRawUnsafe"
+	| "organizationTable"
+	| "claimTable"
+	| "orgScoreInputTable"
+	| "$queryRaw"
+	| "$executeRaw"
+	| "$executeRawUnsafe"
 >;
 
 /** What a child with a parent carries: nothing. Its stakeholder rows and
@@ -64,6 +69,7 @@ export async function scoreOneOrg(db: OrgScoreDb, organizationKey: string): Prom
 	if (!org) return;
 
 	if (org.organizationParentKey) {
+		await db.orgScoreInputTable.deleteMany({ where: { organizationKey } });
 		await db.organizationTable.update({
 			where: { organizationKey },
 			data: { ...NO_SCORE, scoreLastUpdatedAt: new Date(), scoreOrgFlag: false },
@@ -75,16 +81,32 @@ export async function scoreOneOrg(db: OrgScoreDb, organizationKey: string): Prom
 	const localOrgIds = await orgSubtree(db, organizationKey);
 
 	// Tier 4: every live project any org in the subtree is a stakeholder in,
-	// once each however many rows point at it.
+	// once each however many rows point at it, with the subtree orgs that link
+	// it and its live plantings.
 	const projects = await db.$queryRaw<
 		Array<{
 			projectKey: string;
 			scoreProject: number | null;
 			scorePointsAvailable: number | null;
 			scorePointsScored: number | null;
+			via: string[];
+			planted: number;
 		}>
 	>`
-            SELECT pt."projectKey", pt."scoreProject", pt."scorePointsAvailable", pt."scorePointsScored"
+            SELECT pt."projectKey", pt."scoreProject", pt."scorePointsAvailable", pt."scorePointsScored",
+                ARRAY(
+                    SELECT DISTINCT st."organizationKey"
+                    FROM "StakeholderTable" st
+                    WHERE st."projectKey" = pt."projectKey"
+                      AND st."organizationKey" = ANY(${localOrgIds}::text[])
+                      AND st."deletedAt" IS NULL
+                    ORDER BY st."organizationKey"
+                ) AS via,
+                (
+                    SELECT COALESCE(SUM(p."plantedQty"), 0)::int
+                    FROM "PlantingTable" p
+                    WHERE p."projectKey" = pt."projectKey" AND p."deletedAt" IS NULL
+                ) AS planted
             FROM "ProjectTable" pt
             WHERE pt."deletedAt" IS NULL
               AND pt."projectKey" IN (
@@ -117,14 +139,7 @@ export async function scoreOneOrg(db: OrgScoreDb, organizationKey: string): Prom
 	});
 	const scoreSumClaimed = claims._sum.claimQty ?? 0;
 
-	const projectKeys = projects.map((p) => p.projectKey);
-	const [{ planted }] = await db.$queryRaw<Array<{ planted: number }>>`
-            SELECT COALESCE(SUM(p."plantedQty"), 0)::int AS planted
-            FROM "PlantingTable" p
-            WHERE p."projectKey" = ANY(${projectKeys}::text[])
-              AND p."deletedAt" IS NULL
-        `;
-	const scoreSumPlantedQty = planted;
+	const scoreSumPlantedQty = projects.reduce((sum, p) => sum + p.planted, 0);
 
 	const scoreSumUndisclosed = scoreSumClaimed - scoreSumPlantedQty;
 	const ratioDisclosure =
@@ -145,6 +160,25 @@ export async function scoreOneOrg(db: OrgScoreDb, organizationKey: string): Prom
             LIMIT 1
         `;
 
+	// What was averaged, replaced whole and stamped with the org's own time,
+	// before the flag clears: a failure between leaves the org dirty to retry.
+	const scoredAt = new Date();
+	await db.orgScoreInputTable.deleteMany({ where: { organizationKey } });
+	if (projects.length > 0) {
+		await db.orgScoreInputTable.createMany({
+			data: projects.map((p) => ({
+				organizationKey,
+				projectKey: p.projectKey,
+				viaOrganizationKeys: p.via,
+				scoreProject: p.scoreProject,
+				scorePointsScored: p.scorePointsScored,
+				scorePointsAvailable: p.scorePointsAvailable,
+				plantedQty: p.planted,
+				scoredAt,
+			})),
+		});
+	}
+
 	await db.organizationTable.update({
 		where: { organizationKey },
 		data: {
@@ -156,7 +190,7 @@ export async function scoreOneOrg(db: OrgScoreDb, organizationKey: string): Prom
 			scoreSumUndisclosed,
 			scoreOrgFinal,
 			primaryStakeholderCategory: mode?.stakeholderCategory,
-			scoreLastUpdatedAt: new Date(),
+			scoreLastUpdatedAt: scoredAt,
 			scoreOrgFlag: false,
 		},
 	});

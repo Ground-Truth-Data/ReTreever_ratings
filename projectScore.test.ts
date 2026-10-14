@@ -51,6 +51,12 @@ describe("fieldScores", () => {
 		]);
 		expect(rows.every((r) => r.projectKey === "p")).toBe(true);
 		expect(new Set(rows.map((r) => r.granularProjectScoreId)).size).toBe(6);
+		expect(rows.map((r) => `${r.recordTable}:${r.recordKey}`)).toEqual([...Array(3).fill("LandTable:l1"), ...Array(3).fill("LandTable:l2")]);
+	});
+
+	it("refuses a record it cannot name: a point must lead to its row", () => {
+		expect(() => fieldScores("p", { LandTable: [{ hectares: 3 }] }, points)).toThrow(/LandTable: a scored record without its landKey/);
+		expect(() => fieldScores("p", { ClaimTable: [{ claimKey: "k", claimQty: 1 }] }, points)).toThrow(/ClaimTable/);
 	});
 });
 

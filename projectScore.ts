@@ -56,11 +56,35 @@ export function fieldPoints(
 export type FieldScore = {
 	granularProjectScoreId: string;
 	projectKey: string;
+	recordTable: string;
+	/** Null only on a bonusable table's baseline when the project has no record there. */
+	recordKey: string | null;
 	pointsAwarded: number;
 	fieldName: string;
 	isAwarded: boolean;
 	pointsAvailable: number;
 };
+
+/** Each scored table's primary key: what a by-field row names its record by. */
+export const RECORD_KEY: Record<string, string> = {
+	ProjectTable: "projectKey",
+	LandTable: "landKey",
+	PolygonTable: "polygonKey",
+	CropTable: "cropKey",
+	PlantingTable: "plantingKey",
+	MiscTable: "polyKey",
+	StakeholderTable: "stakeholderKey",
+	SurveyTable: "plotKey",
+	SourceTable: "sourceKey",
+};
+
+function recordKeyOf(tableName: string, record: object): string {
+	const column = RECORD_KEY[tableName];
+	const key = column ? (record as Record<string, unknown>)[column] : undefined;
+	if (typeof key !== "string" || key === "")
+		throw new Error(`${tableName}: a scored record without its ${column ?? "primary key"}`);
+	return key;
+}
 
 export type Records = Record<string, object[]>;
 
@@ -69,6 +93,8 @@ const populated = (value: unknown) =>
 
 function fieldScore(
 	projectKey: string,
+	recordTable: string,
+	recordKey: string | null,
 	fieldName: string,
 	value: unknown,
 	pointsAvailable: number,
@@ -77,6 +103,8 @@ function fieldScore(
 	return {
 		granularProjectScoreId: crypto.randomUUID(),
 		projectKey,
+		recordTable,
+		recordKey,
 		pointsAwarded: isAwarded ? pointsAvailable : 0,
 		fieldName,
 		isAwarded,
@@ -85,7 +113,8 @@ function fieldScore(
 }
 
 /** Tier 1 over every record of every table: one row per scoreable field per
- * record, named `Table.field`. Populated means not null and not "". Pure. */
+ * record, named `Table.field` and naming its record. Populated means not null
+ * and not "". Pure. */
 export function fieldScores(
 	projectKey: string,
 	tables: Records,
@@ -94,10 +123,11 @@ export function fieldScores(
 	const out: FieldScore[] = [];
 	for (const [tableName, records] of Object.entries(tables)) {
 		for (const record of records) {
+			const recordKey = recordKeyOf(tableName, record);
 			for (const [fieldName, value] of Object.entries(record)) {
 				const pointsAvailable = points(fieldName);
 				if (pointsAvailable === 0) continue;
-				out.push(fieldScore(projectKey, `${tableName}.${fieldName}`, value, pointsAvailable));
+				out.push(fieldScore(projectKey, tableName, recordKey, `${tableName}.${fieldName}`, value, pointsAvailable));
 			}
 		}
 	}
@@ -133,9 +163,10 @@ export const BONUSABLE: Record<string, Bonusable> = {
 
 /**
  * Tier 1 for a bonusable table. The baseline record counts every baseline
- * field, filled or not — with no record, every one is available and unscored.
- * Each further record adds only the baseline fields it fills, to awarded and
- * available alike. No other column of the table is ever a field. Pure.
+ * field, filled or not — with no record, every one is available and unscored,
+ * and its row names the table and no key. Each further record adds only the
+ * baseline fields it fills, to awarded and available alike. No other column of
+ * the table is ever a field. Pure.
  *
  * The baseline is the record that fills the most points: SourceTable has no
  * creation order, so "first" has to mean something, and the fullest record is
@@ -169,13 +200,16 @@ export function bonusableScores(
 		: ranked;
 
 	const [baseline, ...bonus] = counted;
+	const baselineKey = baseline ? recordKeyOf(tableName, baseline) : null;
 	const out = fields.map((f) =>
-		fieldScore(projectKey, `${tableName}.${f}`, baseline?.[f], points(f)),
+		fieldScore(projectKey, tableName, baselineKey, `${tableName}.${f}`, baseline?.[f], points(f)),
 	);
-	for (const record of bonus)
+	for (const record of bonus) {
+		const recordKey = recordKeyOf(tableName, record);
 		for (const f of fields)
 			if (populated(record[f]))
-				out.push(fieldScore(projectKey, `${tableName}.${f}`, record[f], points(f)));
+				out.push(fieldScore(projectKey, tableName, recordKey, `${tableName}.${f}`, record[f], points(f)));
+	}
 	return out;
 }
 

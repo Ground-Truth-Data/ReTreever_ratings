@@ -77,21 +77,36 @@ describe("propagateDirtyToParents", () => {
 	});
 });
 
-/** Enough of the delegates scoreOneOrg touches, over plain rows. The three
+/** Enough of the delegates scoreOneOrg touches, over plain rows. The two
  * raw queries are tagged templates, dispatched by their text and answered
  * from the same rows the way the SQL would; every text and its parameters
  * are kept for the test to read. */
 function stubDb(t: { orgs: Row[]; stakeholders: Row[]; projects: Row[]; claims: Row[]; plantings: Row[] }) {
 	const sql: { text: string; values: unknown[] }[] = [];
 	const updates: { where: Where; data: Row }[] = [];
+	const inputs: { deleted: Where[]; created: Row[][] } = { deleted: [], created: [] };
+	const order: string[] = [];
 	const live = (r: Row) => r.deletedAt == null;
 	const db = {
+		orgScoreInputTable: {
+			deleteMany: async ({ where }: { where: Where }) => {
+				inputs.deleted.push(where);
+				order.push("inputs");
+				return { count: 0 };
+			},
+			createMany: async ({ data }: { data: Row[] }) => {
+				inputs.created.push(data);
+				order.push("inputs");
+				return { count: data.length };
+			},
+		},
 		organizationTable: {
 			findUnique: async ({ where }: { where: { organizationKey: string } }) =>
 				t.orgs.find((o) => o.organizationKey === where.organizationKey) ?? null,
 			findMany: async ({ where }: { where: Where }) => t.orgs.filter((o) => matches(o, where)),
 			update: async (args: { where: { organizationKey: string }; data: Row }) => {
 				updates.push(args);
+				order.push("org");
 				const row = t.orgs.find((o) => o.organizationKey === args.where.organizationKey);
 				if (row) Object.assign(row, args.data);
 				return row ?? {};
@@ -109,9 +124,8 @@ function stubDb(t: { orgs: Row[]; stakeholders: Row[]; projects: Row[]; claims: 
 			sql.push({ text, values });
 			const [ids] = values as [string[]];
 			if (text.includes('FROM "ProjectTable"')) {
-				const keys = new Set(
-					t.stakeholders.filter((s) => live(s) && ids.includes(s.organizationKey as string)).map((s) => s.projectKey),
-				);
+				const links = t.stakeholders.filter((s) => live(s) && ids.includes(s.organizationKey as string));
+				const keys = new Set(links.map((s) => s.projectKey));
 				return t.projects
 					.filter((p) => live(p) && keys.has(p.projectKey))
 					.map(({ projectKey, scoreProject, scorePointsAvailable, scorePointsScored }) => ({
@@ -119,16 +133,12 @@ function stubDb(t: { orgs: Row[]; stakeholders: Row[]; projects: Row[]; claims: 
 						scoreProject,
 						scorePointsAvailable,
 						scorePointsScored,
+						via: [...new Set(links.filter((s) => s.projectKey === projectKey).map((s) => s.organizationKey as string))].sort(),
+						planted: t.plantings
+							.filter((g) => live(g) && g.projectKey === projectKey)
+							.reduce((s, g) => s + (g.plantedQty as number), 0),
 					}));
 			}
-			if (text.includes('FROM "PlantingTable"'))
-				return [
-					{
-						planted: t.plantings
-							.filter((p) => live(p) && ids.includes(p.projectKey as string))
-							.reduce((s, p) => s + (p.plantedQty as number), 0),
-					},
-				];
 			if (text.includes('FROM "StakeholderTable"')) {
 				const counts = new Map<string, number>();
 				for (const s of t.stakeholders) {
@@ -142,7 +152,7 @@ function stubDb(t: { orgs: Row[]; stakeholders: Row[]; projects: Row[]; claims: 
 			throw new Error(`unexpected query: ${text}`);
 		},
 	};
-	return { db: db as never, sql, updates };
+	return { db: db as never, sql, updates, inputs, order };
 }
 
 // A parent over two live listings and one soft-deleted one, a lone org
@@ -189,7 +199,8 @@ describe("scoreOneOrg", () => {
 		const { db, sql, updates } = stubDb(fixture());
 		await scoreOneOrg(db, "P");
 
-		expect(sql.map((q) => q.values)).toEqual([[["P", "A", "B"]], [["X", "Y"]], [["P", "A", "B"]]]);
+		const subtree = ["P", "A", "B"];
+		expect(sql.map((q) => q.values)).toEqual([[subtree, subtree], [subtree]]);
 		for (const q of sql) expect(q.text).toMatch(/"deletedAt" IS NULL/);
 		expect(updates).toEqual([
 			{
@@ -210,11 +221,28 @@ describe("scoreOneOrg", () => {
 		]);
 	});
 
-	it("scores a linked listing nowhere: columns nulled, flag cleared, no query run", async () => {
-		const { db, sql, updates } = stubDb(fixture());
+	it("keeps what it averaged: one input per linked project, replaced whole, stamped with the org's time", async () => {
+		const { db, updates, inputs, order } = stubDb(fixture());
+		await scoreOneOrg(db, "P");
+
+		const scoredAt = updates[0].data.scoreLastUpdatedAt;
+		expect(inputs.deleted).toEqual([{ organizationKey: "P" }]);
+		expect(inputs.created).toEqual([
+			[
+				{ organizationKey: "P", projectKey: "X", viaOrganizationKeys: ["A"], scoreProject: 0.75, scorePointsScored: 30, scorePointsAvailable: 40, plantedQty: 500, scoredAt },
+				{ organizationKey: "P", projectKey: "Y", viaOrganizationKeys: ["B"], scoreProject: 0.25, scorePointsScored: 10, scorePointsAvailable: 40, plantedQty: 250, scoredAt },
+			],
+		]);
+		// Written first: a failure before the org's update leaves it flagged to retry, never inputs it did not average.
+		expect(order).toEqual(["inputs", "inputs", "org"]);
+	});
+
+	it("scores a linked listing nowhere: columns nulled, inputs dropped, flag cleared, no query run", async () => {
+		const { db, sql, updates, inputs } = stubDb(fixture());
 		await scoreOneOrg(db, "A");
 
 		expect(sql).toEqual([]);
+		expect(inputs).toEqual({ deleted: [{ organizationKey: "A" }], created: [] });
 		expect(updates).toEqual([
 			{
 				where: { organizationKey: "A" },
@@ -224,8 +252,9 @@ describe("scoreOneOrg", () => {
 	});
 
 	it("a lone org is its own subtree; an unscored project adds nothing; an unknown key writes nothing", async () => {
-		const { db, updates } = stubDb(fixture());
+		const { db, updates, inputs } = stubDb(fixture());
 		await scoreOneOrg(db, "Z");
+		expect(inputs.created[0]).toMatchObject([{ projectKey: "V", scoreProject: null, plantedQty: 0 }]);
 		expect(updates[0].data).toMatchObject({
 			scoreOrgPreClaim: 0,
 			scorePointsAvailable: 0,
