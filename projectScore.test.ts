@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { fieldPoints, fieldScores, scoreOneProject } from "./projectScore";
+import { BONUSABLE, bonusableScores, fieldPoints, fieldScores, scoreOneProject } from "./projectScore";
+import { SCORE_MATRIX } from "./scoreMatrix";
 
 const points = fieldPoints(new Map([["geometry", 20]]), 1);
 
@@ -8,7 +9,7 @@ describe("fieldPoints", () => {
 		expect(points("geometry")).toBe(20);
 		expect(points("hectares")).toBe(1);
 		expect(points("isQualityPass")).toBe(1);
-		for (const f of ["projectKey", "createdAt", "editedBy", "platformId", "parentTable", "parentKey", "randomJson"])
+		for (const f of ["projectKey", "createdAt", "editedBy", "platformId", "parentTable", "parentKey", "randomJson", "provenance"])
 			expect(points(f)).toBe(0);
 	});
 
@@ -50,6 +51,12 @@ describe("fieldScores", () => {
 		]);
 		expect(rows.every((r) => r.projectKey === "p")).toBe(true);
 		expect(new Set(rows.map((r) => r.granularProjectScoreId)).size).toBe(6);
+		expect(rows.map((r) => `${r.recordTable}:${r.recordKey}`)).toEqual([...Array(3).fill("LandTable:l1"), ...Array(3).fill("LandTable:l2")]);
+	});
+
+	it("refuses a record it cannot name: a point must lead to its row", () => {
+		expect(() => fieldScores("p", { LandTable: [{ hectares: 3 }] }, points)).toThrow(/LandTable: a scored record without its landKey/);
+		expect(() => fieldScores("p", { ClaimTable: [{ claimKey: "k", claimQty: 1 }] }, points)).toThrow(/ClaimTable/);
 	});
 });
 
@@ -122,6 +129,7 @@ function stubDb(tables: Record<string, Row[]>) {
 			},
 		},
 		surveyTable: delegate("surveyTable"),
+		sourceTable: delegate("sourceTable"),
 		projectScoreByFieldTable: {
 			deleteMany: async ({ where }: { where: Where }) => {
 				deleted.push(where);
@@ -178,7 +186,7 @@ const fixture = (): Record<string, Row[]> => ({
 	cropTable: [{ cropKey: "c1", projectKey: "B", cropName: "Rhizophora" }],
 });
 
-const CHILD_TABLES = ["landTable", "cropTable", "plantingTable", "miscTable", "stakeholderTable", "surveyTable"];
+const CHILD_TABLES = ["landTable", "cropTable", "plantingTable", "miscTable", "stakeholderTable", "surveyTable", "sourceTable"];
 
 const byTable = (rows: { fieldName: string; pointsAwarded: number; pointsAvailable: number }[]) => {
 	const out: Record<string, string> = {};
@@ -200,6 +208,7 @@ describe("scoreOneProject", () => {
 			ProjectTable: "1 1/1", // projectName — keys, stamps, the score columns and both flags are system fields
 			LandTable: "4 21/42", // l1 3+20, l2 0 — the PolygonTable array is not a field
 			PolygonTable: "1 20/20",
+			SourceTable: "6 0/6", // no source: the baseline is available and scores nothing
 		});
 		expect(asked.landTable).toEqual([{ projectKey: { in: ["A"] }, deletedAt: null }]);
 		expect(deleted).toEqual([{ projectKey: "A" }]);
@@ -207,8 +216,8 @@ describe("scoreOneProject", () => {
 			{
 				where: { projectKey: "A" },
 				data: {
-					scoreProject: 42 / 63,
-					scorePointsAvailable: 63,
+					scoreProject: 42 / 69,
+					scorePointsAvailable: 69,
 					scorePointsScored: 42,
 					scoreLastUpdatedAt: expect.any(Date),
 					scoreProjectFlag: false,
@@ -227,9 +236,10 @@ describe("scoreOneProject", () => {
 			ProjectTable: "1 1/1",
 			LandTable: "2 1/21",
 			CropTable: "1 1/1",
+			SourceTable: "6 0/6",
 		});
 		expect(asked.landTable).toEqual([{ projectKey: { in: ["B"] }, deletedAt: null }]);
-		expect(updates[0].data).toMatchObject({ scorePointsAvailable: 23, scorePointsScored: 3 });
+		expect(updates[0].data).toMatchObject({ scorePointsAvailable: 29, scorePointsScored: 3 });
 	});
 
 	// A walk over ProjectTable is what a hierarchy needed; there is none, so the
@@ -256,8 +266,8 @@ describe("scoreOneProject", () => {
 		const { db, updates, created } = stubDb(fixture());
 		await scoreOneProject(db, "E", points);
 
-		expect(byTable(created[0])).toEqual({ ProjectTable: "1 1/1" });
-		expect(updates[0].data).toMatchObject({ scorePointsAvailable: 1, scorePointsScored: 1 });
+		expect(byTable(created[0])).toEqual({ ProjectTable: "1 1/1", SourceTable: "6 0/6" });
+		expect(updates[0].data).toMatchObject({ scorePointsAvailable: 7, scorePointsScored: 1 });
 	});
 
 	it("gives an unchanged project the same numbers on a rescore: its own score columns are never fields", async () => {
@@ -265,7 +275,7 @@ describe("scoreOneProject", () => {
 		const { db, updates, created } = stubDb(tables);
 		await scoreOneProject(db, "A", points);
 		// The first run's numbers are on the row when the second reads it.
-		expect(tables.projectTable[0]).toMatchObject({ scorePointsScored: 42, scorePointsAvailable: 63, scoreProjectFlag: false });
+		expect(tables.projectTable[0]).toMatchObject({ scorePointsScored: 42, scorePointsAvailable: 69, scoreProjectFlag: false });
 		await scoreOneProject(db, "A", points);
 
 		const numbers = ({ scorePointsScored, scorePointsAvailable, scoreProject }: Record<string, unknown>) =>
@@ -301,5 +311,189 @@ describe("scoreOneProject", () => {
 		expect(updates).toEqual([]);
 		expect(deleted).toEqual([]);
 		expect(orgMarks).toEqual([]);
+	});
+});
+
+// The bootstrap weights, so these numbers are the ones theScore.md's example shows.
+const weighted = fieldPoints(
+	new Map(Object.entries(SCORE_MATRIX).map(([f, { points }]) => [f, points])),
+	1,
+);
+const BASELINE = ["url", "urlType", "disclosureType", "sourceDesc", "sourceCredit", "stakeholderCategoryId"];
+
+let n = 0;
+/** A live source on project S; every column a scraped row carries, only `filled` set. */
+const source = (filled: Record<string, unknown>, extra: Record<string, unknown> = {}): Row => ({
+	sourceKey: `s${String(++n).padStart(4, "0")}`,
+	projectKey: "S",
+	url: null,
+	urlType: null,
+	disclosureType: null,
+	sourceDesc: null,
+	sourceCredit: null,
+	stakeholderCategoryId: null,
+	parentKey: "S",
+	parentTable: "projectTable",
+	organizationKey: null,
+	displayRank: 5,
+	deletedAt: null,
+	stakeholderCategorySource: null,
+	captureStatus: "pending",
+	captureFinalUrl: null,
+	captureHttpStatus: null,
+	captureStorageKey: null,
+	captureProvenance: null,
+	captureError: null,
+	captureAttempts: 0,
+	isValidated: false,
+	...filled,
+	...extra,
+});
+const photo = (desc?: string) =>
+	source({ url: "https://x/p.jpg", urlType: "image", ...(desc ? { sourceDesc: desc } : {}) });
+
+async function scoreSources(sources: Row[]) {
+	const { db, updates, created } = stubDb({
+		projectTable: [{ projectKey: "S", projectName: "Sourced", ...unscored }],
+		sourceTable: sources,
+	});
+	await scoreOneProject(db, "S", weighted);
+	const rows = created[0].filter((r) => r.fieldName.startsWith("SourceTable."));
+	return {
+		data: updates[0].data,
+		source: byTable(rows).SourceTable,
+		fields: rows.map((r) => `${r.fieldName.slice("SourceTable.".length)}=${r.pointsAwarded}/${r.pointsAvailable}`),
+	};
+}
+
+describe("sources: the first is a baseline, further ones a capped bonus", () => {
+	it("no source: the six baseline fields are available and score nothing, so the project row alone cannot reach 100%", async () => {
+		const { data, source: src, fields } = await scoreSources([]);
+		expect(fields).toEqual([
+			"url=0/1",
+			"urlType=0/1",
+			"disclosureType=0/1",
+			"sourceDesc=0/1",
+			"sourceCredit=0/1",
+			"stakeholderCategoryId=0/1",
+		]);
+		expect(src).toBe("6 0/6");
+		expect(data).toMatchObject({ scorePointsScored: 1, scorePointsAvailable: 7 });
+		expect(data.scoreProject).toBeLessThan(1);
+	});
+
+	it("one source with half its baseline filled: every baseline field counts, filled or not", async () => {
+		const { source: src, fields } = await scoreSources([
+			source({ url: "https://x", urlType: "webpage", sourceDesc: "Project page" }),
+		]);
+		expect(fields).toEqual([
+			"url=1/1",
+			"urlType=1/1",
+			"disclosureType=0/1",
+			"sourceDesc=1/1",
+			"sourceCredit=0/1",
+			"stakeholderCategoryId=0/1",
+		]);
+		expect(src).toBe("6 3/6");
+	});
+
+	// theScore.md § Bonusable tables, worked example.
+	it("three sources: the best-filled is the baseline, the others add only what they fill", async () => {
+		const page = source({ url: "https://x", urlType: "webpage", sourceDesc: "Project page", sourceCredit: "A. Ranger" });
+		const credited = source({ url: "https://x/a.jpg", urlType: "image", sourceCredit: "J. Doe" });
+		const report = source({ url: "https://x/r.pdf", urlType: "document", sourceDesc: "Annual report" });
+		const { data, source: src, fields } = await scoreSources([report, credited, page]);
+		expect(fields).toEqual([
+			// page: 4 of 6
+			"url=1/1",
+			"urlType=1/1",
+			"disclosureType=0/1",
+			"sourceDesc=1/1",
+			"sourceCredit=1/1",
+			"stakeholderCategoryId=0/1",
+			// credited: +3 of +3
+			"url=1/1",
+			"urlType=1/1",
+			"sourceCredit=1/1",
+			// report: +3 of +3
+			"url=1/1",
+			"urlType=1/1",
+			"sourceDesc=1/1",
+		]);
+		expect(src).toBe("12 10/12");
+		expect(data).toMatchObject({ scorePointsScored: 11, scorePointsAvailable: 13 });
+	});
+
+	it("120 sources of one urlType score what one does", async () => {
+		const one = await scoreSources([photo("Nursery")]);
+		const many = await scoreSources(Array.from({ length: 120 }, () => photo("Nursery")));
+		expect(one.source).toBe("6 3/6");
+		expect(many.fields).toEqual(one.fields);
+		expect(many.data).toEqual({ ...one.data, scoreLastUpdatedAt: expect.any(Date) });
+	});
+
+	it("a capped urlType counts its best-filled source, whatever order the rows come in", async () => {
+		const bare = photo();
+		const described = photo("Seedlings at week 6");
+		const page = source({ url: "https://x", urlType: "webpage" });
+		const a = await scoreSources([bare, described, page]);
+		const b = await scoreSources([page, described, bare]);
+		expect(a.fields).toEqual(b.fields);
+		// the baseline is the described photo (3 points filled) over the page and the bare photo (2 each)
+		expect(a.source).toBe("8 5/8");
+	});
+
+	it("a soft-deleted source counts as none", async () => {
+		const none = await scoreSources([]);
+		const deleted = await scoreSources([
+			source({ url: "https://x", urlType: "webpage", sourceDesc: "d", sourceCredit: "c" }, { deletedAt: gone }),
+		]);
+		expect(deleted.source).toBe("6 0/6");
+		expect(deleted.fields).toEqual(none.fields);
+		expect(deleted.data).toEqual({ ...none.data, scoreLastUpdatedAt: expect.any(Date) });
+	});
+
+	it("only the six baseline fields ever count: a source's other columns are never a field", async () => {
+		const plain = await scoreSources([source({ url: "https://x", urlType: "webpage" })]);
+		const busy = await scoreSources([
+			source(
+				{ url: "https://x", urlType: "webpage" },
+				{
+					parentKey: "l1",
+					parentTable: "landTable",
+					organizationKey: "o1",
+					displayRank: 1,
+					stakeholderCategorySource: "NGO",
+					captureStatus: "captured",
+					captureFinalUrl: "https://y",
+					captureHttpStatus: 200,
+					captureStorageKey: "k",
+					captureManifestSha: "abc",
+					captureProvenance: { tls: 1 },
+					captureError: "none",
+					captureAttempts: 3,
+					isValidated: true,
+					validatedBy: "admin",
+				},
+			),
+		]);
+		expect(busy.fields).toEqual(plain.fields);
+		expect(busy.data).toEqual({ ...plain.data, scoreLastUpdatedAt: expect.any(Date) });
+		expect(busy.fields.map((f) => f.split("=")[0])).toEqual(BASELINE);
+	});
+});
+
+describe("bonusableScores", () => {
+	it("SourceTable is the only table on the rule; another joins by listing its baseline fields", () => {
+		expect(Object.keys(BONUSABLE)).toEqual(["SourceTable"]);
+		const crops = [
+			{ cropKey: "c2", cropName: "Rhizophora", speciesId: null, cropDesc: "x" },
+			{ cropKey: "c1", cropName: null, speciesId: null, cropDesc: null },
+		];
+		const rows = bonusableScores("p", "CropTable", crops, { key: "cropKey", baseline: ["cropName", "speciesId"] }, weighted);
+		expect(rows.map((r) => `${r.fieldName}=${r.pointsAwarded}/${r.pointsAvailable}`)).toEqual([
+			"CropTable.cropName=5/5",
+			"CropTable.speciesId=0/5",
+		]);
 	});
 });
