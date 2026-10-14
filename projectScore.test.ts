@@ -366,13 +366,13 @@ describe("sources: the first is a baseline, further ones a capped bonus", () => 
 		expect(fields).toEqual([
 			"url=0/1",
 			"urlType=0/1",
-			"disclosureType=0/5",
+			"disclosureType=0/1",
 			"sourceDesc=0/1",
-			"sourceCredit=0/5",
-			"stakeholderCategoryId=0/2",
+			"sourceCredit=0/1",
+			"stakeholderCategoryId=0/1",
 		]);
-		expect(src).toBe("6 0/15");
-		expect(data).toMatchObject({ scorePointsScored: 1, scorePointsAvailable: 16 });
+		expect(src).toBe("6 0/6");
+		expect(data).toMatchObject({ scorePointsScored: 1, scorePointsAvailable: 7 });
 		expect(data.scoreProject).toBeLessThan(1);
 	});
 
@@ -383,12 +383,12 @@ describe("sources: the first is a baseline, further ones a capped bonus", () => 
 		expect(fields).toEqual([
 			"url=1/1",
 			"urlType=1/1",
-			"disclosureType=0/5",
+			"disclosureType=0/1",
 			"sourceDesc=1/1",
-			"sourceCredit=0/5",
-			"stakeholderCategoryId=0/2",
+			"sourceCredit=0/1",
+			"stakeholderCategoryId=0/1",
 		]);
-		expect(src).toBe("6 3/15");
+		expect(src).toBe("6 3/6");
 	});
 
 	// theScore.md § Bonusable tables, worked example.
@@ -398,30 +398,30 @@ describe("sources: the first is a baseline, further ones a capped bonus", () => 
 		const report = source({ url: "https://x/r.pdf", urlType: "document", sourceDesc: "Annual report" });
 		const { data, source: src, fields } = await scoreSources([report, credited, page]);
 		expect(fields).toEqual([
-			// page: 8 of 15
+			// page: 4 of 6
 			"url=1/1",
 			"urlType=1/1",
-			"disclosureType=0/5",
+			"disclosureType=0/1",
 			"sourceDesc=1/1",
-			"sourceCredit=5/5",
-			"stakeholderCategoryId=0/2",
-			// credited: +7 of +7
+			"sourceCredit=1/1",
+			"stakeholderCategoryId=0/1",
+			// credited: +3 of +3
 			"url=1/1",
 			"urlType=1/1",
-			"sourceCredit=5/5",
+			"sourceCredit=1/1",
 			// report: +3 of +3
 			"url=1/1",
 			"urlType=1/1",
 			"sourceDesc=1/1",
 		]);
-		expect(src).toBe("12 18/25");
-		expect(data).toMatchObject({ scorePointsScored: 19, scorePointsAvailable: 26 });
+		expect(src).toBe("12 10/12");
+		expect(data).toMatchObject({ scorePointsScored: 11, scorePointsAvailable: 13 });
 	});
 
 	it("120 sources of one urlType score what one does", async () => {
 		const one = await scoreSources([photo("Nursery")]);
 		const many = await scoreSources(Array.from({ length: 120 }, () => photo("Nursery")));
-		expect(one.source).toBe("6 3/15");
+		expect(one.source).toBe("6 3/6");
 		expect(many.fields).toEqual(one.fields);
 		expect(many.data).toEqual({ ...one.data, scoreLastUpdatedAt: expect.any(Date) });
 	});
@@ -434,7 +434,7 @@ describe("sources: the first is a baseline, further ones a capped bonus", () => 
 		const b = await scoreSources([page, described, bare]);
 		expect(a.fields).toEqual(b.fields);
 		// the baseline is the described photo (3 points filled) over the page and the bare photo (2 each)
-		expect(a.source).toBe("8 5/17");
+		expect(a.source).toBe("8 5/8");
 	});
 
 	it("a soft-deleted source counts as none", async () => {
@@ -442,7 +442,7 @@ describe("sources: the first is a baseline, further ones a capped bonus", () => 
 		const deleted = await scoreSources([
 			source({ url: "https://x", urlType: "webpage", sourceDesc: "d", sourceCredit: "c" }, { deletedAt: gone }),
 		]);
-		expect(deleted.source).toBe("6 0/15");
+		expect(deleted.source).toBe("6 0/6");
 		expect(deleted.fields).toEqual(none.fields);
 		expect(deleted.data).toEqual({ ...none.data, scoreLastUpdatedAt: expect.any(Date) });
 	});
