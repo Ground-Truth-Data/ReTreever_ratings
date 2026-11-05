@@ -13,6 +13,7 @@ export type ScoreDb = Pick<
 	| "surveyTable"
 	| "sourceTable"
 	| "projectScoreByFieldTable"
+	| "$transaction"
 >;
 
 /** Points a field is worth; 0 means it is not scored at all. */
@@ -280,34 +281,40 @@ export async function scoreOneProject(
 		points,
 	);
 
-	await db.projectScoreByFieldTable.deleteMany({ where: { projectKey } });
-	if (scores.length > 0) {
-		await db.projectScoreByFieldTable.createMany({ data: scores });
-	}
-
 	const scorePointsAvailable = scores.reduce((sum, s) => sum + s.pointsAvailable, 0);
 	const scorePointsScored = scores.reduce((sum, s) => sum + s.pointsAwarded, 0);
-	// An org scores the mean of its projects, so every org on this one is stale
-	// now. Before the project's flag clears: a failure between leaves the
-	// project dirty to retry, never an org unmarked. Skipping rows already
-	// flagged keeps a --full run from rewriting a busy org once per project.
-	await db.organizationTable.updateMany({
-		where: {
-			deletedAt: null,
-			OR: [{ scoreOrgFlag: false }, { scoreOrgFlag: null }],
-			stakeholderTables: { some: { projectKey, deletedAt: null } },
+	// One transaction: a deadlock on an org another worker shares must not leave
+	// the field rows new and the project's own score old. The waits are for a
+	// pool its workers' parallel reads keep busy, past Prisma's 2 s default.
+	await db.$transaction(
+		async (tx) => {
+			await tx.projectScoreByFieldTable.deleteMany({ where: { projectKey } });
+			if (scores.length > 0) {
+				await tx.projectScoreByFieldTable.createMany({ data: scores });
+			}
+			// An org scores the mean of its projects, so every org on this one is
+			// stale now. Skipping rows already flagged keeps a --full run from
+			// rewriting a busy org once per project.
+			await tx.organizationTable.updateMany({
+				where: {
+					deletedAt: null,
+					OR: [{ scoreOrgFlag: false }, { scoreOrgFlag: null }],
+					stakeholderTables: { some: { projectKey, deletedAt: null } },
+				},
+				data: { scoreOrgFlag: true },
+			});
+			await tx.projectTable.update({
+				where: { projectKey },
+				data: {
+					scoreProject:
+						scorePointsAvailable > 0 ? scorePointsScored / scorePointsAvailable : 0,
+					scorePointsAvailable,
+					scorePointsScored,
+					scoreLastUpdatedAt: new Date(),
+					scoreProjectFlag: false,
+				},
+			});
 		},
-		data: { scoreOrgFlag: true },
-	});
-	await db.projectTable.update({
-		where: { projectKey },
-		data: {
-			scoreProject:
-				scorePointsAvailable > 0 ? scorePointsScored / scorePointsAvailable : 0,
-			scorePointsAvailable,
-			scorePointsScored,
-			scoreLastUpdatedAt: new Date(),
-			scoreProjectFlag: false,
-		},
-	});
+		{ maxWait: 30_000, timeout: 30_000 },
+	);
 }

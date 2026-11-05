@@ -1,7 +1,8 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { pgliteDb, type TestDb } from "$parent/tests/pglite/pgliteDb";
 import { scoreOneOrg } from "./orgScore";
 import { fieldPoints, RECORD_KEY, scoreOneProject } from "./projectScore";
+import { withRetry } from "./scoreRun";
 
 // The scorers' writes against Postgres with ReTreever's real schema: what a
 // trace reads back is what these leave behind.
@@ -107,6 +108,74 @@ describe("scoreOneProject: each point names its record", () => {
 			JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = tc.constraint_name AND kcu.table_name = tc.table_name
 			WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_name = ANY(${Object.keys(RECORD_KEY)}::text[])`;
 		expect(Object.fromEntries(pks.map((p) => [p.table, p.column]))).toEqual(RECORD_KEY);
+	});
+});
+
+// Postgres's own 40P01 on the project's first org update, raised once: the
+// sequence counts outside the transaction a deadlock rolls back.
+async function deadlockOnce() {
+	await t.pglite.exec(`
+		CREATE SEQUENCE deadlocks;
+		CREATE FUNCTION deadlock_once() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			IF nextval('deadlocks') = 1 THEN RAISE EXCEPTION 'deadlock detected' USING ERRCODE = '40P01'; END IF;
+			RETURN NEW;
+		END $$;
+		CREATE TRIGGER deadlock_once BEFORE UPDATE ON "OrganizationTable" FOR EACH ROW EXECUTE FUNCTION deadlock_once();`);
+}
+
+describe("scoreOneProject under a deadlock", () => {
+	afterEach(async () => {
+		vi.restoreAllMocks();
+		await t.pglite.exec(`DROP TRIGGER IF EXISTS deadlock_once ON "OrganizationTable"; DROP FUNCTION IF EXISTS deadlock_once; DROP SEQUENCE IF EXISTS deadlocks;`);
+	});
+
+	// Scored once, then a record lost and the org scored since (its flag clear),
+	// so the rescore writes different rows and marks the org again.
+	async function scoredThenChanged() {
+		await seedProject("a-1");
+		await scoreOneProject(t.prisma, "a-1", points);
+		await t.prisma.cropTable.update({ where: { cropKey: "a-1-c1" }, data: { deletedAt: new Date() } });
+		await t.prisma.organizationTable.update({ where: { organizationKey: "o-a-1" }, data: { scoreOrgFlag: false } });
+	}
+	const aggregateOf = async (projectKey: string) => {
+		const p = await t.prisma.projectTable.findUniqueOrThrow({ where: { projectKey } });
+		return { scorePointsScored: p.scorePointsScored, scorePointsAvailable: p.scorePointsAvailable };
+	};
+	const tallyOf = async (projectKey: string) => {
+		const rows = await t.prisma.projectScoreByFieldTable.findMany({ where: { projectKey } });
+		return {
+			scorePointsScored: rows.reduce((n, r) => n + r.pointsAwarded, 0),
+			scorePointsAvailable: rows.reduce((n, r) => n + r.pointsAvailable, 0),
+		};
+	};
+
+	it("a failed score leaves the project's rows, its aggregate and its org as they were", async () => {
+		await scoredThenChanged();
+		const before = { rows: await rowsOf("a-1"), aggregate: await aggregateOf("a-1") };
+		await deadlockOnce();
+
+		await expect(scoreOneProject(t.prisma, "a-1", points)).rejects.toThrow(/deadlock detected/);
+
+		expect(await rowsOf("a-1")).toEqual(before.rows);
+		expect(await aggregateOf("a-1")).toEqual(before.aggregate);
+		expect(await tallyOf("a-1")).toEqual(before.aggregate);
+		expect((await t.prisma.organizationTable.findUniqueOrThrow({ where: { organizationKey: "o-a-1" } })).scoreOrgFlag).toBe(false);
+	});
+
+	it("a deadlock is retried, and the retry writes the whole score", async () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		await scoredThenChanged();
+		const before = await rowsOf("a-1");
+		await deadlockOnce();
+
+		await withRetry(() => scoreOneProject(t.prisma, "a-1", points), "score a-1");
+
+		const after = await rowsOf("a-1");
+		expect(after.some((r) => r.recordTable === "CropTable")).toBe(false);
+		expect(after).not.toEqual(before);
+		expect(await tallyOf("a-1")).toEqual(await aggregateOf("a-1"));
+		expect((await t.prisma.organizationTable.findUniqueOrThrow({ where: { organizationKey: "o-a-1" } })).scoreOrgFlag).toBe(true);
 	});
 });
 

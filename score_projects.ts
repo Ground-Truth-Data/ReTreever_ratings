@@ -32,8 +32,9 @@ export async function score_projects(projectKeys: string[]): Promise<string[]> {
 
 	const failed: string[] = [];
 	// Workers share only the pool and the orgs two projects have in common: both
-	// may set the same scoreOrgFlag, and a deadlock there leaves the project
-	// flagged for the next run.
+	// may set the same scoreOrgFlag. A deadlock there rolls the loser's score
+	// back whole and withRetry scores it again; one that loses every try stays
+	// flagged, its old score intact, for the next run.
 	let cursor = 0;
 	async function worker(): Promise<void> {
 		while (cursor < projectKeys.length) {

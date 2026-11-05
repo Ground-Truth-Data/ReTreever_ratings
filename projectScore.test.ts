@@ -81,7 +81,6 @@ function stubDb(tables: Record<string, Row[]>) {
 	const deleted: Where[] = [];
 	const created: { fieldName: string; pointsAwarded: number; pointsAvailable: number }[][] = [];
 	const orgMarks: { where: Where; data: Record<string, unknown> }[] = [];
-	const order: string[] = [];
 	const asked: Record<string, Where[]> = {};
 	const included: Record<string, Include[]> = {};
 	const delegate = (name: string) => ({
@@ -110,7 +109,6 @@ function stubDb(tables: Record<string, Row[]>) {
 			},
 			update: async (args: { where: { projectKey: string }; data: Record<string, unknown> }) => {
 				updates.push(args);
-				order.push("project");
 				const row = tables.projectTable.find((r) => r.projectKey === args.where.projectKey);
 				if (row) Object.assign(row, args.data);
 				return row ? { ...row } : {};
@@ -124,7 +122,6 @@ function stubDb(tables: Record<string, Row[]>) {
 		organizationTable: {
 			updateMany: async (args: { where: Where; data: Record<string, unknown> }) => {
 				orgMarks.push(args);
-				order.push("orgs");
 				return { count: 0 };
 			},
 		},
@@ -140,8 +137,10 @@ function stubDb(tables: Record<string, Row[]>) {
 				return { count: data.length };
 			},
 		},
+		// Rollback is Postgres's to prove: scoreWrites.test.ts.
+		$transaction: (fn: (tx: unknown) => Promise<unknown>): Promise<unknown> => fn(db),
 	};
-	return { db: db as never, updates, deleted, created, asked, included, orgMarks, order };
+	return { db: db as never, updates, deleted, created, asked, included, orgMarks };
 }
 
 /** A row as the upsert leaves it: never scored, flagged. */
@@ -287,8 +286,8 @@ describe("scoreOneProject", () => {
 
 	// An org's Tier 4 is the mean of its projects' scores, so a project scored
 	// for any reason — a land-only change included — leaves its orgs stale.
-	it("flags every live org standing on the project, before clearing the project's own flag", async () => {
-		const { db, orgMarks, order } = stubDb(fixture());
+	it("flags every live org standing on the project", async () => {
+		const { db, orgMarks } = stubDb(fixture());
 		await scoreOneProject(db, "A", points);
 
 		expect(orgMarks).toEqual([
@@ -301,8 +300,6 @@ describe("scoreOneProject", () => {
 				data: { scoreOrgFlag: true },
 			},
 		]);
-		// Marked first: a failure between the two then leaves the project dirty to retry, never an org stale.
-		expect(order).toEqual(["orgs", "project"]);
 	});
 
 	it("writes nothing for a key that does not exist", async () => {
