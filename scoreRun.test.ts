@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { scoreInBatches } from "./scoreRun";
+import { scoreInBatches, withRetry } from "./scoreRun";
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+	vi.restoreAllMocks();
+	vi.useRealTimers();
+});
 
 describe("scoreInBatches", () => {
 	it("counts what scored, and never prints the all-scored line over a failure", async () => {
@@ -48,5 +51,56 @@ describe("scoreInBatches", () => {
 		);
 
 		expect(result).toEqual({ scored: 1, failed: ["a"] });
+	});
+});
+
+// What Prisma 7 throws through @prisma/adapter-pg, as scoreWrites.test.ts
+// catches it from a real Postgres: the SQLSTATE is in the adapter's cause, and
+// a 40001's message never names it.
+const pgError = (code: string, prismaCode: string, message: string, originalMessage: string) =>
+	Object.assign(new Error(`\nInvalid \`db.organizationTable.updateMany()\` invocation:\n\n${message}`), {
+		name: "PrismaClientKnownRequestError",
+		code: prismaCode,
+		meta: {
+			modelName: "OrganizationTable",
+			driverAdapterError: { name: "DriverAdapterError", cause: { originalCode: code, originalMessage } },
+		},
+	});
+
+describe("withRetry", () => {
+	it.each([
+		["a deadlock", pgError("40P01", "P2039", "Database error. Code: `40P01`. Message: `deadlock detected`", "deadlock detected")],
+		[
+			"a serialization failure",
+			pgError(
+				"40001",
+				"P2034",
+				"Transaction failed due to a write conflict or a deadlock. Please retry your transaction",
+				"could not serialize access due to concurrent update",
+			),
+		],
+	])("retries %s", async (_name, error) => {
+		vi.useFakeTimers();
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		let calls = 0;
+		const run = withRetry(async () => {
+			if (++calls === 1) throw error;
+			return "scored";
+		}, "score a-1");
+		await vi.runAllTimersAsync();
+		await expect(run).resolves.toBe("scored");
+		expect(calls).toBe(2);
+	});
+
+	it("never retries a real error", async () => {
+		let calls = 0;
+		const unique = pgError("23505", "P2002", "Unique constraint failed on the fields: (`projectKey`)", "duplicate key value");
+		await expect(
+			withRetry(async () => {
+				calls++;
+				throw unique;
+			}, "score a-1"),
+		).rejects.toBe(unique);
+		expect(calls).toBe(1);
 	});
 });

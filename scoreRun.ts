@@ -1,6 +1,17 @@
-/** Transient connection errors worth a retry — a real bug (bad data, schema
- * mismatch) still fails fast. */
+// A deadlock (40P01) or serialization failure (40001): Postgres rolled the
+// transaction back, so the same writes again can succeed.
+const RETRYABLE_SQLSTATES = new Set(["40P01", "40001"]);
+
+// Prisma names a 40001 only in the driver adapter's cause, never in its message.
+function sqlState(e: unknown): string | undefined {
+	return (e as { meta?: { driverAdapterError?: { cause?: { originalCode?: string } } } } | null)?.meta
+		?.driverAdapterError?.cause?.originalCode;
+}
+
+/** Transient connection errors and lost lock races worth a retry — a real bug
+ * (bad data, schema mismatch) still fails fast. */
 function isTransient(e: unknown): boolean {
+	if (RETRYABLE_SQLSTATES.has(sqlState(e) ?? "")) return true;
 	const msg = e instanceof Error ? e.message : String(e);
 	return /ECONNRESET|ETIMEDOUT|ECONNREFUSED|socket disconnected|Connection terminated|Timed out fetching a new connection/i.test(
 		msg,
