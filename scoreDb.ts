@@ -8,6 +8,8 @@
  * Foundr's orchestrator hands in its own client instead, so a pipeline run is
  * Foundr's pool plus the lock — never a second pool beside it.
  */
+import { execFileSync } from "node:child_process";
+import crypto from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,10 +17,17 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import pg from "pg";
 import { PrismaClient } from "$parent/prisma/generated/prisma-postgres/client.js";
 import { namePool } from "$parent/src/lib/server/runLock.js";
+import { matrixHash, METHODOLOGY_VERSION, seedScoreMatrix } from "./scoreMatrix.js";
 
-export const scoreConfig = JSON.parse(
-	readFileSync(join(dirname(fileURLToPath(import.meta.url)), "scoreConfig.json"), "utf8"),
-);
+const RATINGS_DIR = dirname(fileURLToPath(import.meta.url));
+const CONFIG_FILE = join(RATINGS_DIR, "scoreConfig.json");
+
+export const scoreConfig = JSON.parse(readFileSync(CONFIG_FILE, "utf8"));
+
+/** sha256 of scoreConfig.json as read. */
+export function configHash(): string {
+	return crypto.createHash("sha256").update(readFileSync(CONFIG_FILE)).digest("hex");
+}
 
 let client: PrismaClient | null = null;
 let ownPool: pg.Pool | null = null;
@@ -48,4 +57,45 @@ export async function closeScoreDb(): Promise<void> {
 	await ownPool.end();
 	ownPool = null;
 	client = null;
+}
+
+const git = (...args: string[]) =>
+	execFileSync("git", ["-C", RATINGS_DIR, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+
+/** This repo's commit, and whether the tree differs from it. A dirty tree is
+ * stamped, not refused: the row says the sha alone cannot reproduce it. */
+export function ratingsTree(): { ratingsSha: string; dirty: boolean } {
+	return { ratingsSha: git("rev-parse", "HEAD"), dirty: git("status", "--porcelain") !== "" };
+}
+
+export type ScoreRunDb = Pick<PrismaClient, "scoreRunTable" | "foundrRunTable" | "scoreMatrixTable">;
+
+/**
+ * Starts a score run: the weights table is made equal to git, then one
+ * ScoreRunTable row records what this run scores with. Its id goes on every
+ * score row the run writes. The Foundr run is the newest, whose upsert set
+ * the flags being scored; its per-site ledger hashes, hashed together, are
+ * the ledgers behind those rows.
+ */
+export async function openScoreRun(db: ScoreRunDb): Promise<string> {
+	await seedScoreMatrix(db);
+	const foundrRun = await db.foundrRunTable.findFirst({
+		orderBy: { startedAt: "desc" },
+		select: { runId: true, ledgerHashes: true },
+	});
+	const ledgerHash = foundrRun
+		? crypto.createHash("sha256").update(JSON.stringify(foundrRun.ledgerHashes)).digest("hex")
+		: null;
+	const { scoreRunId } = await db.scoreRunTable.create({
+		data: {
+			...ratingsTree(),
+			matrixHash: matrixHash(),
+			configHash: configHash(),
+			methodologyVersion: METHODOLOGY_VERSION,
+			foundrRunId: foundrRun?.runId ?? null,
+			ledgerHash,
+		},
+		select: { scoreRunId: true },
+	});
+	return scoreRunId;
 }

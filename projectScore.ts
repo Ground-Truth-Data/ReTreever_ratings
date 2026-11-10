@@ -266,13 +266,15 @@ export async function recordsOf(db: ScoreDb, keys: string[]): Promise<Records> {
 
 /**
  * Tier 2 for one project: its own row plus its own records, one by-field row
- * per field per record. A project is 1:1 with the platform's record, so there
- * is nothing above or below it to score over.
+ * per field per record, each stamped with the run that wrote it. A project
+ * is 1:1 with the platform's record, so there is nothing above or below it
+ * to score over.
  */
 export async function scoreOneProject(
 	db: ScoreDb,
 	projectKey: string,
 	points: FieldPoints,
+	scoreRunId: string,
 ): Promise<void> {
 	const project = await db.projectTable.findUnique({ where: { projectKey } });
 	if (!project) return;
@@ -292,7 +294,7 @@ export async function scoreOneProject(
 		async (tx) => {
 			await tx.projectScoreByFieldTable.deleteMany({ where: { projectKey } });
 			if (scores.length > 0) {
-				await tx.projectScoreByFieldTable.createMany({ data: scores });
+				await tx.projectScoreByFieldTable.createMany({ data: scores.map((s) => ({ ...s, scoreRunId })) });
 			}
 			// An org scores the mean of its projects, so every org on this one is
 			// stale now. Skipping rows already flagged keeps a --full run from

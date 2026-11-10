@@ -197,7 +197,7 @@ const fixture = () => ({
 describe("scoreOneOrg", () => {
 	it("scores a parent over its live subtree: projects once each, claims against their plantings, the modal category", async () => {
 		const { db, sql, updates } = stubDb(fixture());
-		await scoreOneOrg(db, "P");
+		await scoreOneOrg(db, "P", "run-1");
 
 		const subtree = ["P", "A", "B"];
 		expect(sql.map((q) => q.values)).toEqual([[subtree, subtree], [subtree]]);
@@ -223,14 +223,14 @@ describe("scoreOneOrg", () => {
 
 	it("keeps what it averaged: one input per linked project, replaced whole, stamped with the org's time", async () => {
 		const { db, updates, inputs, order } = stubDb(fixture());
-		await scoreOneOrg(db, "P");
+		await scoreOneOrg(db, "P", "run-1");
 
 		const scoredAt = updates[0].data.scoreLastUpdatedAt;
 		expect(inputs.deleted).toEqual([{ organizationKey: "P" }]);
 		expect(inputs.created).toEqual([
 			[
-				{ organizationKey: "P", projectKey: "X", viaOrganizationKeys: ["A"], scoreProject: 0.75, scorePointsScored: 30, scorePointsAvailable: 40, plantedQty: 500, scoredAt },
-				{ organizationKey: "P", projectKey: "Y", viaOrganizationKeys: ["B"], scoreProject: 0.25, scorePointsScored: 10, scorePointsAvailable: 40, plantedQty: 250, scoredAt },
+				{ organizationKey: "P", projectKey: "X", viaOrganizationKeys: ["A"], scoreProject: 0.75, scorePointsScored: 30, scorePointsAvailable: 40, plantedQty: 500, scoredAt, scoreRunId: "run-1" },
+				{ organizationKey: "P", projectKey: "Y", viaOrganizationKeys: ["B"], scoreProject: 0.25, scorePointsScored: 10, scorePointsAvailable: 40, plantedQty: 250, scoredAt, scoreRunId: "run-1" },
 			],
 		]);
 		// Written first: a failure before the org's update leaves it flagged to retry, never inputs it did not average.
@@ -239,7 +239,7 @@ describe("scoreOneOrg", () => {
 
 	it("scores a linked listing nowhere: columns nulled, inputs dropped, flag cleared, no query run", async () => {
 		const { db, sql, updates, inputs } = stubDb(fixture());
-		await scoreOneOrg(db, "A");
+		await scoreOneOrg(db, "A", "run-1");
 
 		expect(sql).toEqual([]);
 		expect(inputs).toEqual({ deleted: [{ organizationKey: "A" }], created: [] });
@@ -253,7 +253,7 @@ describe("scoreOneOrg", () => {
 
 	it("a lone org is its own subtree; an unscored project adds nothing; an unknown key writes nothing", async () => {
 		const { db, updates, inputs } = stubDb(fixture());
-		await scoreOneOrg(db, "Z");
+		await scoreOneOrg(db, "Z", "run-1");
 		expect(inputs.created[0]).toMatchObject([{ projectKey: "V", scoreProject: null, plantedQty: 0 }]);
 		expect(updates[0].data).toMatchObject({
 			scoreOrgPreClaim: 0,
@@ -263,7 +263,7 @@ describe("scoreOneOrg", () => {
 			primaryStakeholderCategory: "nursery",
 		});
 
-		await scoreOneOrg(db, "nope");
+		await scoreOneOrg(db, "nope", "run-1");
 		expect(updates).toHaveLength(1);
 	});
 });

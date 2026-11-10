@@ -2,8 +2,8 @@
 import { fieldPoints, scoreOneProject } from "./projectScore.js";
 import { takeRunLock } from "$parent/src/lib/server/runLock.js";
 import { scoreInBatches, withRetry } from "./scoreRun.js";
-import { closeScoreDb, scoreConfig as config, scoreDb } from "./scoreDb.js";
-import { matrixPoints, seedScoreMatrix } from "./scoreMatrix.js";
+import { closeScoreDb, openScoreRun, scoreConfig as config, scoreDb } from "./scoreDb.js";
+import { matrixPoints } from "./scoreMatrix.js";
 
 const DEFAULT_FIELD_POINTS = config.defaults.fieldPoints;
 
@@ -16,11 +16,12 @@ const SCORE_CONCURRENCY = Math.max(
 const points = fieldPoints(matrixPoints(), DEFAULT_FIELD_POINTS);
 
 // Returns projectKeys that failed even after retries — never throws for one project, so a bad row can't take a long run down.
-export async function score_projects(projectKeys: string[]): Promise<string[]> {
+// A call with no run is a run of its own (the orchestrator's); scoreAll opens one for all its batches.
+export async function score_projects(projectKeys: string[], scoreRunId?: string): Promise<string[]> {
 	console.log(
 		`\n📊 Scoring ${projectKeys.length} dirty projects, ${SCORE_CONCURRENCY} at a time...`,
 	);
-	await seedScoreMatrix(scoreDb());
+	const runId = scoreRunId ?? (await openScoreRun(scoreDb()));
 
 	const failed: string[] = [];
 	// Workers share only the pool and the orgs two projects have in common: both
@@ -33,7 +34,7 @@ export async function score_projects(projectKeys: string[]): Promise<string[]> {
 			const projectKey = projectKeys[cursor++];
 			try {
 				await withRetry(
-					() => scoreOneProject(scoreDb(), projectKey, points),
+					() => scoreOneProject(scoreDb(), projectKey, points, runId),
 					`score ${projectKey}`,
 				);
 			} catch (e) {
@@ -135,6 +136,7 @@ async function scoreAll(full: boolean, batchSize: number): Promise<void> {
 		return;
 	}
 
+	const scoreRunId = await openScoreRun(scoreDb());
 	const { failed } = await scoreInBatches(
 		full ? "projects" : "dirty projects",
 		totalToScore,
@@ -149,7 +151,7 @@ async function scoreAll(full: boolean, batchSize: number): Promise<void> {
 							orderBy: { scoreLastUpdatedAt: "asc" },
 						})
 					).map((p) => p.projectKey),
-		score_projects,
+		(keys) => score_projects(keys, scoreRunId),
 	);
 	if (failed.length > 0 && full) {
 		console.warn(

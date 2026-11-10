@@ -47,7 +47,7 @@ const rowsOf = (projectKey: string) =>
 describe("scoreOneProject: each point names its record", () => {
 	it("every by-field row carries its record's table and primary key, live records only", async () => {
 		await seedProject("a-1");
-		await scoreOneProject(t.prisma, "a-1", points);
+		await scoreOneProject(t.prisma, "a-1", points, "run-1");
 		const rows = await rowsOf("a-1");
 
 		for (const r of rows) expect(r.fieldName.split(".")[0], r.fieldName).toBe(r.recordTable);
@@ -68,7 +68,7 @@ describe("scoreOneProject: each point names its record", () => {
 
 	it("names the baseline source by its best-filled record, and a bonus row by its own", async () => {
 		await seedProject("a-1");
-		await scoreOneProject(t.prisma, "a-1", points);
+		await scoreOneProject(t.prisma, "a-1", points, "run-1");
 		const sources = (await rowsOf("a-1")).filter((r) => r.recordTable === "SourceTable");
 		// a (url, urlType, sourceDesc) is the baseline: all six fields; b adds only what it fills.
 		expect(sources.filter((r) => r.recordKey === "a-1-src-a")).toHaveLength(6);
@@ -80,7 +80,7 @@ describe("scoreOneProject: each point names its record", () => {
 
 	it("a project with no source: the six baseline rows name the table and no record", async () => {
 		await seedProject("e-1", false);
-		await scoreOneProject(t.prisma, "e-1", points);
+		await scoreOneProject(t.prisma, "e-1", points, "run-1");
 		const rows = await rowsOf("e-1");
 		expect(rows.filter((r) => r.recordKey === null)).toEqual(
 			["disclosureType", "sourceCredit", "sourceDesc", "stakeholderCategoryId", "url", "urlType"].map((f) => ({
@@ -95,9 +95,9 @@ describe("scoreOneProject: each point names its record", () => {
 
 	it("a rescore replaces the project's rows rather than adding to them", async () => {
 		await seedProject("a-1");
-		await scoreOneProject(t.prisma, "a-1", points);
+		await scoreOneProject(t.prisma, "a-1", points, "run-1");
 		const first = await rowsOf("a-1");
-		await scoreOneProject(t.prisma, "a-1", points);
+		await scoreOneProject(t.prisma, "a-1", points, "run-1");
 		expect(await rowsOf("a-1")).toEqual(first);
 	});
 
@@ -134,7 +134,7 @@ describe("scoreOneProject under a deadlock", () => {
 	// so the rescore writes different rows and marks the org again.
 	async function scoredThenChanged() {
 		await seedProject("a-1");
-		await scoreOneProject(t.prisma, "a-1", points);
+		await scoreOneProject(t.prisma, "a-1", points, "run-1");
 		await t.prisma.cropTable.update({ where: { cropKey: "a-1-c1" }, data: { deletedAt: new Date() } });
 		await t.prisma.organizationTable.update({ where: { organizationKey: "o-a-1" }, data: { scoreOrgFlag: false } });
 	}
@@ -155,7 +155,7 @@ describe("scoreOneProject under a deadlock", () => {
 		const before = { rows: await rowsOf("a-1"), aggregate: await aggregateOf("a-1") };
 		await deadlockOnce();
 
-		await expect(scoreOneProject(t.prisma, "a-1", points)).rejects.toThrow(/deadlock detected/);
+		await expect(scoreOneProject(t.prisma, "a-1", points, "run-1")).rejects.toThrow(/deadlock detected/);
 
 		expect(await rowsOf("a-1")).toEqual(before.rows);
 		expect(await aggregateOf("a-1")).toEqual(before.aggregate);
@@ -169,7 +169,7 @@ describe("scoreOneProject under a deadlock", () => {
 		const before = await rowsOf("a-1");
 		await deadlockOnce();
 
-		await withRetry(() => scoreOneProject(t.prisma, "a-1", points), "score a-1");
+		await withRetry(() => scoreOneProject(t.prisma, "a-1", points, "run-1"), "score a-1");
 
 		const after = await rowsOf("a-1");
 		expect(after.some((r) => r.recordTable === "CropTable")).toBe(false);
@@ -205,14 +205,14 @@ const inputsOf = (organizationKey: string) =>
 describe("scoreOneOrg: each org keeps what it averaged", () => {
 	it("writes one input per linked project, as averaged, stamped with the org's own scoring time", async () => {
 		await seedOrgs();
-		await scoreOneOrg(t.prisma, "p-eden");
+		await scoreOneOrg(t.prisma, "p-eden", "run-1");
 		const org = await t.prisma.organizationTable.findUniqueOrThrow({ where: { organizationKey: "p-eden" } });
 		const inputs = await inputsOf("p-eden");
 
 		expect(inputs.map((i) => ({ ...i, scoreProject: i.scoreProject === null ? null : Number(i.scoreProject) }))).toEqual([
-			{ organizationKey: "p-eden", projectKey: "a-1", viaOrganizationKeys: ["a-eden"], scoreProject: 0.5, scorePointsScored: 5, scorePointsAvailable: 10, plantedQty: 0, scoredAt: org.scoreLastUpdatedAt, scoreRunId: null },
-			{ organizationKey: "p-eden", projectKey: "c-2", viaOrganizationKeys: ["a-eden", "c-eden"], scoreProject: 0.75, scorePointsScored: 3, scorePointsAvailable: 4, plantedQty: 40, scoredAt: org.scoreLastUpdatedAt, scoreRunId: null },
-			{ organizationKey: "p-eden", projectKey: "c-3", viaOrganizationKeys: ["c-eden"], scoreProject: null, scorePointsScored: null, scorePointsAvailable: null, plantedQty: 2, scoredAt: org.scoreLastUpdatedAt, scoreRunId: null },
+			{ organizationKey: "p-eden", projectKey: "a-1", viaOrganizationKeys: ["a-eden"], scoreProject: 0.5, scorePointsScored: 5, scorePointsAvailable: 10, plantedQty: 0, scoredAt: org.scoreLastUpdatedAt, scoreRunId: "run-1" },
+			{ organizationKey: "p-eden", projectKey: "c-2", viaOrganizationKeys: ["a-eden", "c-eden"], scoreProject: 0.75, scorePointsScored: 3, scorePointsAvailable: 4, plantedQty: 40, scoredAt: org.scoreLastUpdatedAt, scoreRunId: "run-1" },
+			{ organizationKey: "p-eden", projectKey: "c-3", viaOrganizationKeys: ["c-eden"], scoreProject: null, scorePointsScored: null, scorePointsAvailable: null, plantedQty: 2, scoredAt: org.scoreLastUpdatedAt, scoreRunId: "run-1" },
 		]);
 		// The stored numbers are the inputs' own: the mean of the scored, the planted sum of all.
 		expect(Number(org.scoreOrgPreClaim)).toBeCloseTo(0.625, 12);
@@ -222,9 +222,9 @@ describe("scoreOneOrg: each org keeps what it averaged", () => {
 
 	it("a rescore replaces the inputs whole: a project unlinked since is gone, not kept", async () => {
 		await seedOrgs();
-		await scoreOneOrg(t.prisma, "p-eden");
+		await scoreOneOrg(t.prisma, "p-eden", "run-1");
 		await t.prisma.stakeholderTable.updateMany({ where: { projectKey: "c-3" }, data: { deletedAt: new Date() } });
-		await scoreOneOrg(t.prisma, "p-eden");
+		await scoreOneOrg(t.prisma, "p-eden", "run-1");
 		expect((await inputsOf("p-eden")).map((i) => i.projectKey)).toEqual(["a-1", "c-2"]);
 	});
 
@@ -233,13 +233,13 @@ describe("scoreOneOrg: each org keeps what it averaged", () => {
 		await t.prisma.orgScoreInputTable.create({
 			data: { organizationKey: "a-eden", projectKey: "a-1", viaOrganizationKeys: ["a-eden"], scoredAt: new Date("2026-10-01") },
 		});
-		await scoreOneOrg(t.prisma, "a-eden");
+		await scoreOneOrg(t.prisma, "a-eden", "run-1");
 		expect(await inputsOf("a-eden")).toEqual([]);
 	});
 
 	it("an org with no linked project writes none and scores 0", async () => {
 		await t.prisma.organizationTable.create({ data: { organizationKey: "a-lone", organizationName: "Lone" } });
-		await scoreOneOrg(t.prisma, "a-lone");
+		await scoreOneOrg(t.prisma, "a-lone", "run-1");
 		expect(await inputsOf("a-lone")).toEqual([]);
 		expect(Number((await t.prisma.organizationTable.findUniqueOrThrow({ where: { organizationKey: "a-lone" } })).scoreOrgPreClaim)).toBe(0);
 	});

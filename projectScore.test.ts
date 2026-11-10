@@ -79,7 +79,7 @@ const matches = (r: Record<string, unknown>, where: Where) =>
 function stubDb(tables: Record<string, Row[]>) {
 	const updates: { where: Where; data: Record<string, unknown> }[] = [];
 	const deleted: Where[] = [];
-	const created: { fieldName: string; pointsAwarded: number; pointsAvailable: number }[][] = [];
+	const created: { fieldName: string; pointsAwarded: number; pointsAvailable: number; scoreRunId: string }[][] = [];
 	const orgMarks: { where: Where; data: Record<string, unknown> }[] = [];
 	const asked: Record<string, Where[]> = {};
 	const included: Record<string, Include[]> = {};
@@ -200,7 +200,7 @@ const byTable = (rows: { fieldName: string; pointsAwarded: number; pointsAvailab
 describe("scoreOneProject", () => {
 	it("scores a project over its own row and its own live records", async () => {
 		const { db, updates, deleted, created, asked } = stubDb(fixture());
-		await scoreOneProject(db, "A", points);
+		await scoreOneProject(db, "A", points, "run-1");
 
 		// records: fields scored/available
 		expect(byTable(created[0])).toEqual({
@@ -211,6 +211,7 @@ describe("scoreOneProject", () => {
 		});
 		expect(asked.landTable).toEqual([{ projectKey: { in: ["A"] }, deletedAt: null }]);
 		expect(deleted).toEqual([{ projectKey: "A" }]);
+		expect(created[0].every((r) => r.scoreRunId === "run-1")).toBe(true);
 		expect(updates).toEqual([
 			{
 				where: { projectKey: "A" },
@@ -229,7 +230,7 @@ describe("scoreOneProject", () => {
 	// neither one's score may borrow the other's records.
 	it("takes nothing from the other platform's row for the same project", async () => {
 		const { db, updates, created, asked } = stubDb(fixture());
-		await scoreOneProject(db, "B", points);
+		await scoreOneProject(db, "B", points, "run-1");
 
 		expect(byTable(created[0])).toEqual({
 			ProjectTable: "1 1/1",
@@ -245,13 +246,13 @@ describe("scoreOneProject", () => {
 	// scorer reads the one row by key and never lists the table.
 	it("never reads a second project row", async () => {
 		const { db, asked } = stubDb(fixture());
-		await scoreOneProject(db, "A", points);
+		await scoreOneProject(db, "A", points, "run-1");
 		expect(asked.projectTable).toBeUndefined();
 	});
 
 	it("counts no soft-deleted record: every child query is live-only, and so is a land's polygons", async () => {
 		const { db, created, asked, included } = stubDb(fixture());
-		await scoreOneProject(db, "A", points);
+		await scoreOneProject(db, "A", points, "run-1");
 
 		for (const t of CHILD_TABLES)
 			expect(asked[t], t).toEqual([{ projectKey: { in: ["A"] }, deletedAt: null }]);
@@ -263,7 +264,7 @@ describe("scoreOneProject", () => {
 
 	it("scores a project the scrape left no records for over its own row alone", async () => {
 		const { db, updates, created } = stubDb(fixture());
-		await scoreOneProject(db, "E", points);
+		await scoreOneProject(db, "E", points, "run-1");
 
 		expect(byTable(created[0])).toEqual({ ProjectTable: "1 1/1", SourceTable: "6 0/6" });
 		expect(updates[0].data).toMatchObject({ scorePointsAvailable: 7, scorePointsScored: 1 });
@@ -272,10 +273,10 @@ describe("scoreOneProject", () => {
 	it("gives an unchanged project the same numbers on a rescore: its own score columns are never fields", async () => {
 		const tables = fixture();
 		const { db, updates, created } = stubDb(tables);
-		await scoreOneProject(db, "A", points);
+		await scoreOneProject(db, "A", points, "run-1");
 		// The first run's numbers are on the row when the second reads it.
 		expect(tables.projectTable[0]).toMatchObject({ scorePointsScored: 42, scorePointsAvailable: 69, scoreProjectFlag: false });
-		await scoreOneProject(db, "A", points);
+		await scoreOneProject(db, "A", points, "run-1");
 
 		const numbers = ({ scorePointsScored, scorePointsAvailable, scoreProject }: Record<string, unknown>) =>
 			({ scorePointsScored, scorePointsAvailable, scoreProject });
@@ -288,7 +289,7 @@ describe("scoreOneProject", () => {
 	// for any reason — a land-only change included — leaves its orgs stale.
 	it("flags every live org standing on the project", async () => {
 		const { db, orgMarks } = stubDb(fixture());
-		await scoreOneProject(db, "A", points);
+		await scoreOneProject(db, "A", points, "run-1");
 
 		expect(orgMarks).toEqual([
 			{
@@ -304,7 +305,7 @@ describe("scoreOneProject", () => {
 
 	it("writes nothing for a key that does not exist", async () => {
 		const { db, updates, deleted, orgMarks } = stubDb(fixture());
-		await scoreOneProject(db, "nope", points);
+		await scoreOneProject(db, "nope", points, "run-1");
 		expect(updates).toEqual([]);
 		expect(deleted).toEqual([]);
 		expect(orgMarks).toEqual([]);
@@ -354,7 +355,7 @@ async function scoreSources(sources: Row[]) {
 		projectTable: [{ projectKey: "S", projectName: "Sourced", ...unscored }],
 		sourceTable: sources,
 	});
-	await scoreOneProject(db, "S", weighted);
+	await scoreOneProject(db, "S", weighted, "run-1");
 	const rows = created[0].filter((r) => r.fieldName.startsWith("SourceTable."));
 	return {
 		data: updates[0].data,

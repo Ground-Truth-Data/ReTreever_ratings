@@ -7,16 +7,19 @@ import {
 } from "./orgScore.js";
 import { takeRunLock } from "$parent/src/lib/server/runLock.js";
 import { scoreInBatches, withRetry } from "./scoreRun.js";
-import { closeScoreDb, scoreConfig as config, scoreDb } from "./scoreDb.js";
+import { closeScoreDb, openScoreRun, scoreConfig as config, scoreDb } from "./scoreDb.js";
 
 /** Returns the organizationKeys that failed even after retries — never throws
- * for one org. */
+ * for one org. A call with no run is a run of its own; scoreAndRankOrgs opens
+ * one for all its batches. */
 export async function score_orgs(
 	orgIds?: string[],
 	batchSize?: number,
 	full = false,
+	scoreRunId?: string,
 ): Promise<string[]> {
 	const prisma = scoreDb();
+	const runId = scoreRunId ?? (await openScoreRun(prisma));
 	const orgsToScore = orgIds
 		? await prisma.organizationTable.findMany({
 				where: orgWhere(full, orgIds),
@@ -34,7 +37,7 @@ export async function score_orgs(
 	const failed: string[] = [];
 	for (const { organizationKey } of orgsToScore) {
 		try {
-			await withRetry(() => scoreOneOrg(prisma, organizationKey), `score ${organizationKey}`);
+			await withRetry(() => scoreOneOrg(prisma, organizationKey, runId), `score ${organizationKey}`);
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
 			console.error(`❌ Giving up on ${organizationKey} after retries: ${msg}`);
@@ -89,6 +92,7 @@ export async function scoreAndRankOrgs(
 		`\n📋 Found ${totalToScore} organization${full ? "" : " dirty"} to score`,
 	);
 
+	const scoreRunId = await openScoreRun(prisma);
 	const { failed } = await scoreInBatches(
 		full ? "organizations" : "dirty organizations",
 		totalToScore,
@@ -103,7 +107,7 @@ export async function scoreAndRankOrgs(
 							orderBy: { scoreLastUpdatedAt: "asc" },
 						})
 					).map((o) => o.organizationKey),
-		(keys) => score_orgs(keys, batchSize, full),
+		(keys) => score_orgs(keys, batchSize, full, scoreRunId),
 	);
 	if (failed.length > 0 && full) {
 		console.warn(

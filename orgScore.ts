@@ -61,7 +61,7 @@ export async function propagateDirtyToParents(db: OrgScoreDb): Promise<number> {
 	return marked;
 }
 
-export async function scoreOneOrg(db: OrgScoreDb, organizationKey: string): Promise<void> {
+export async function scoreOneOrg(db: OrgScoreDb, organizationKey: string, scoreRunId: string): Promise<void> {
 	const org = await db.organizationTable.findUnique({
 		where: { organizationKey },
 		select: { organizationParentKey: true },
@@ -175,6 +175,7 @@ export async function scoreOneOrg(db: OrgScoreDb, organizationKey: string): Prom
 				scorePointsAvailable: p.scorePointsAvailable,
 				plantedQty: p.planted,
 				scoredAt,
+				scoreRunId,
 			})),
 		});
 	}
