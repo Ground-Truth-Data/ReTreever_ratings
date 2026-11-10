@@ -73,16 +73,18 @@ export type ScoreRunDb = Pick<PrismaClient, "scoreRunTable" | "foundrRunTable" |
 /**
  * Starts a score run: the weights table is made equal to git, then one
  * ScoreRunTable row records what this run scores with. Its id goes on every
- * score row the run writes. The Foundr run is the newest, whose upsert set
- * the flags being scored; its per-site ledger hashes, hashed together, are
- * the ledgers behind those rows.
+ * score row the run writes. The Foundr run is the one the process carries
+ * (`FOUNDR_RUN_ID`, set when the orchestrator scores inside its own run), else
+ * the newest, whose upsert set the flags being scored; its per-site ledger
+ * hashes, hashed together, are the ledgers behind those rows.
  */
 export async function openScoreRun(db: ScoreRunDb): Promise<string> {
 	await seedScoreMatrix(db);
-	const foundrRun = await db.foundrRunTable.findFirst({
-		orderBy: { startedAt: "desc" },
-		select: { runId: true, ledgerHashes: true },
-	});
+	const select = { runId: true, ledgerHashes: true };
+	const carried = process.env.FOUNDR_RUN_ID;
+	const foundrRun = carried
+		? await db.foundrRunTable.findUnique({ where: { runId: carried }, select })
+		: await db.foundrRunTable.findFirst({ orderBy: { startedAt: "desc" }, select });
 	const ledgerHash = foundrRun
 		? crypto.createHash("sha256").update(JSON.stringify(foundrRun.ledgerHashes)).digest("hex")
 		: null;

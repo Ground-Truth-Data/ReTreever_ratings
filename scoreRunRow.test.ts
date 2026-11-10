@@ -62,6 +62,29 @@ describe("openScoreRun", () => {
 			ledgerHash: crypto.createHash("sha256").update(JSON.stringify(stored.ledgerHashes)).digest("hex"),
 		});
 	});
+
+	// The orchestrator scores inside its run, so the row points at that run even when a later one has opened.
+	it("names the Foundr run the process carries over the newest, and none when that run has no row", async () => {
+		const run = (runId: string, startedAt: string) =>
+			t.prisma.foundrRunTable.create({
+				data: { runId, startedAt: new Date(startedAt), foundrSha: "f", retreeverSha: "r", dirty: false, manifest: {}, ledgerHashes: { a: "3".repeat(64) }, mapHashes: {} },
+			});
+		await run("mine", "2026-11-09T10:00:00Z");
+		await run("newest", "2026-11-10T10:00:00Z");
+		vi.stubEnv("FOUNDR_RUN_ID", "mine");
+		try {
+			const first = await openScoreRun(t.prisma);
+			expect(await t.prisma.scoreRunTable.findUniqueOrThrow({ where: { scoreRunId: first } })).toMatchObject({
+				foundrRunId: "mine",
+				ledgerHash: crypto.createHash("sha256").update(JSON.stringify({ a: "3".repeat(64) })).digest("hex"),
+			});
+			vi.stubEnv("FOUNDR_RUN_ID", "never-opened");
+			const second = await openScoreRun(t.prisma);
+			expect(await t.prisma.scoreRunTable.findUniqueOrThrow({ where: { scoreRunId: second } })).toMatchObject({ foundrRunId: null, ledgerHash: null });
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
 });
 
 async function seedProject(projectKey: string) {
