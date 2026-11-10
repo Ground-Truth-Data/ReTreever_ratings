@@ -210,9 +210,9 @@ describe("scoreOneOrg: each org keeps what it averaged", () => {
 		const inputs = await inputsOf("p-eden");
 
 		expect(inputs.map((i) => ({ ...i, scoreProject: i.scoreProject === null ? null : Number(i.scoreProject) }))).toEqual([
-			{ organizationKey: "p-eden", projectKey: "a-1", viaOrganizationKeys: ["a-eden"], scoreProject: 0.5, scorePointsScored: 5, scorePointsAvailable: 10, plantedQty: 0, scoredAt: org.scoreLastUpdatedAt },
-			{ organizationKey: "p-eden", projectKey: "c-2", viaOrganizationKeys: ["a-eden", "c-eden"], scoreProject: 0.75, scorePointsScored: 3, scorePointsAvailable: 4, plantedQty: 40, scoredAt: org.scoreLastUpdatedAt },
-			{ organizationKey: "p-eden", projectKey: "c-3", viaOrganizationKeys: ["c-eden"], scoreProject: null, scorePointsScored: null, scorePointsAvailable: null, plantedQty: 2, scoredAt: org.scoreLastUpdatedAt },
+			{ organizationKey: "p-eden", projectKey: "a-1", viaOrganizationKeys: ["a-eden"], scoreProject: 0.5, scorePointsScored: 5, scorePointsAvailable: 10, plantedQty: 0, scoredAt: org.scoreLastUpdatedAt, scoreRunId: null },
+			{ organizationKey: "p-eden", projectKey: "c-2", viaOrganizationKeys: ["a-eden", "c-eden"], scoreProject: 0.75, scorePointsScored: 3, scorePointsAvailable: 4, plantedQty: 40, scoredAt: org.scoreLastUpdatedAt, scoreRunId: null },
+			{ organizationKey: "p-eden", projectKey: "c-3", viaOrganizationKeys: ["c-eden"], scoreProject: null, scorePointsScored: null, scorePointsAvailable: null, plantedQty: 2, scoredAt: org.scoreLastUpdatedAt, scoreRunId: null },
 		]);
 		// The stored numbers are the inputs' own: the mean of the scored, the planted sum of all.
 		expect(Number(org.scoreOrgPreClaim)).toBeCloseTo(0.625, 12);
