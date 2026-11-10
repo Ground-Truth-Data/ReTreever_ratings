@@ -71,11 +71,19 @@ The pure scoring functions (`projectScore.ts`, `orgScore.ts`, `subtree.ts`,
 `scoreRun.ts`) are covered by the `*.test.ts` files beside them, which run
 against stubs with no database.
 
-## The database is the source of truth for weights
+## Git is the source of truth for weights, and every run is recorded
 
-`SCORE_MATRIX` seeds `ScoreMatrixTable` when it is empty, and after that the
-table wins. A weight hand-edited in the database survives; changing the
-constant here does not silently re-weight everything.
+`SCORE_MATRIX` in `scoreMatrix.ts` is the live weighting. Each score run
+first makes `ScoreMatrixTable` equal to it (`seedScoreMatrix`), so the table
+is a mirror for the admin to read and a hand edit there lasts until the next
+run. Retuning a weight is a commit.
+
+Each run then writes one `ScoreRunTable` row — this repo's commit and whether
+the tree was dirty, a hash of the weights and of `scoreConfig.json`, the
+methodology version, and the Foundr run whose rows it scored — and stamps
+that row's id on every by-field and org-input row it writes. A published
+score traces back to the code and weights that made it, and scoring the same
+inputs under the same files reproduces it (`scoreRunRow.test.ts`).
 
 ---
 

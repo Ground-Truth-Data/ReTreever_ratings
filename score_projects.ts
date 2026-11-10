@@ -3,7 +3,7 @@ import { fieldPoints, scoreOneProject } from "./projectScore.js";
 import { takeRunLock } from "$parent/src/lib/server/runLock.js";
 import { scoreInBatches, withRetry } from "./scoreRun.js";
 import { closeScoreDb, scoreConfig as config, scoreDb } from "./scoreDb.js";
-import { seedScoreMatrixIfEmpty } from "./scoreMatrix.js";
+import { matrixPoints, seedScoreMatrix } from "./scoreMatrix.js";
 
 const DEFAULT_FIELD_POINTS = config.defaults.fieldPoints;
 
@@ -13,22 +13,14 @@ const SCORE_CONCURRENCY = Math.max(
 		config.pool.scoreConcurrency,
 );
 
-// Seeds from scoreMatrix.ts only when empty — a populated table is never modified here.
-async function loadScoreMatrix(): Promise<Map<string, number>> {
-	await seedScoreMatrixIfEmpty(scoreDb());
-
-	const rows = await scoreDb().scoreMatrixTable.findMany({
-		select: { fieldName: true, pointsAvailable: true },
-	});
-	return new Map(rows.map((r) => [r.fieldName, r.pointsAvailable]));
-}
+const points = fieldPoints(matrixPoints(), DEFAULT_FIELD_POINTS);
 
 // Returns projectKeys that failed even after retries — never throws for one project, so a bad row can't take a long run down.
 export async function score_projects(projectKeys: string[]): Promise<string[]> {
 	console.log(
 		`\n📊 Scoring ${projectKeys.length} dirty projects, ${SCORE_CONCURRENCY} at a time...`,
 	);
-	const points = fieldPoints(await loadScoreMatrix(), DEFAULT_FIELD_POINTS);
+	await seedScoreMatrix(scoreDb());
 
 	const failed: string[] = [];
 	// Workers share only the pool and the orgs two projects have in common: both
