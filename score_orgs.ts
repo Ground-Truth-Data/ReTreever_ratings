@@ -92,7 +92,8 @@ export async function scoreAndRankOrgs(
 		`\n📋 Found ${totalToScore} organization${full ? "" : " dirty"} to score`,
 	);
 
-	const scoreRunId = await openScoreRun(prisma);
+	// Opened by the first batch with keys, so a run that scores nothing records no run.
+	let scoreRunId: string | undefined;
 	const { failed } = await scoreInBatches(
 		full ? "organizations" : "dirty organizations",
 		totalToScore,
@@ -107,7 +108,7 @@ export async function scoreAndRankOrgs(
 							orderBy: { scoreLastUpdatedAt: "asc" },
 						})
 					).map((o) => o.organizationKey),
-		(keys) => score_orgs(keys, batchSize, full, scoreRunId),
+		async (keys) => score_orgs(keys, batchSize, full, (scoreRunId ??= await openScoreRun(prisma))),
 	);
 	if (failed.length > 0 && full) {
 		console.warn(
