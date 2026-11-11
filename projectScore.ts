@@ -138,9 +138,8 @@ export function fieldScores(
 }
 
 /** A table scored on a few baseline fields, where a further record can only
- * add. `key` breaks ties; `capBy` lets one record per distinct value count. */
+ * add. Its `RECORD_KEY` breaks ties; `capBy` lets one record per distinct value count. */
 export type Bonusable = {
-	key: string;
 	baseline: readonly string[];
 	capBy?: string;
 };
@@ -149,7 +148,6 @@ export type Bonusable = {
  * one on with a full rescore, never in passing. */
 export const BONUSABLE: Record<string, Bonusable> = {
 	SourceTable: {
-		key: "sourceKey",
 		baseline: [
 			"url",
 			"urlType",
@@ -187,7 +185,7 @@ export function bonusableScores(
 		.map((record) => ({
 			record,
 			filled: fields.reduce((sum, f) => sum + (populated(record[f]) ? points(f) : 0), 0),
-			key: String(record[rule.key]),
+			key: recordKeyOf(tableName, record),
 		}))
 		.sort((a, b) => b.filled - a.filled || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
 		.map(({ record }) => record);

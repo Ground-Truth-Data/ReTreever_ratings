@@ -488,7 +488,7 @@ describe("bonusableScores", () => {
 			{ cropKey: "c2", cropName: "Rhizophora", speciesId: null, cropDesc: "x" },
 			{ cropKey: "c1", cropName: null, speciesId: null, cropDesc: null },
 		];
-		const rows = bonusableScores("p", "CropTable", crops, { key: "cropKey", baseline: ["cropName", "speciesId"] }, weighted);
+		const rows = bonusableScores("p", "CropTable", crops, { baseline: ["cropName", "speciesId"] }, weighted);
 		expect(rows.map((r) => `${r.fieldName}=${r.pointsAwarded}/${r.pointsAvailable}`)).toEqual([
 			"CropTable.cropName=5/5",
 			"CropTable.speciesId=0/5",
