@@ -1,0 +1,22 @@
+{
+	"compilerOptions": {
+		"strict": true,
+		"noEmit": true,
+		"noUnusedLocals": true,
+		"skipLibCheck": true,
+		"esModuleInterop": true,
+		"resolveJsonModule": true,
+		"allowImportingTsExtensions": true,
+		"module": "esnext",
+		"moduleResolution": "bundler",
+		"target": "es2023",
+		"types": ["node"],
+		// Mirrors vitest.config.ts: the scorers' parent is ReTreever, beside this repo here and in burnerReTreever.
+		"paths": {
+			"$parent/siblings/ReTreever_ratings/*": ["./*"],
+			"$parent/siblings/*": ["../*"],
+			"$parent/*": ["../ReTreever/*"]
+		}
+	},
+	"include": ["*.ts"]
+}
