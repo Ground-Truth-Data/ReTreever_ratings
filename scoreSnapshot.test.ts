@@ -29,7 +29,7 @@ async function seed() {
 		await db.landTable.create({ data: { landKey: `${projectKey}-l`, landName: "Plot", projectKey, hectares: 2 } });
 		if (trees) await db.plantingTable.create({ data: { plantingKey: `${projectKey}-t`, projectKey, parentKey: `${projectKey}-l`, parentTable: "landTable", plantedQty: trees } });
 		await db.stakeholderTable.create({
-			data: { stakeholderKey: `${projectKey}-s`, organizationKey: "o-1", projectKey, parentKey: projectKey, parentTable: "projectTable" },
+			data: { stakeholderKey: `${projectKey}-s`, organizationKey: "o-1", projectKey, parentKey: projectKey, parentTable: "projectTable", stakeholderCategory: "developer_ish" },
 		});
 	}
 	await db.projectTable.create({ data: { projectKey: "a-gone", projectName: "Gone", deletedAt: new Date() } });

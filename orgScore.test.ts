@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { disclosure, NO_SCORE, orgWhere, propagateDirtyToParents, rankOrgs, scoreOneOrg, weightedMean } from "./orgScore";
+import { disclosure, NO_SCORE, orgWhere, PLANTING_OWNER_ROLES, propagateDirtyToParents, rankOrgs, scoreOneOrg, weightedMean } from "./orgScore";
 
 type Row = Record<string, unknown>;
 type Where = Record<string, unknown>;
@@ -103,6 +103,10 @@ describe("disclosure", () => {
 		expect(disclosure(1_000_000, [claim("a", 10_000)]).ratio).toBe(1);
 	});
 
+	it("an org that owns no plantings has no ratio, its claims counted for nothing", () => {
+		expect(disclosure(null, [claim("a", 600)])).toEqual({ cohort: "unreviewed", ratio: null, sumClaimed: null, claimKeys: [] });
+	});
+
 	it("a claim of 0 trees hides nothing", () => {
 		expect(disclosure(0, [claim("a", 0)])).toMatchObject({ cohort: "reviewed", ratio: 1, sumClaimed: 0 });
 	});
@@ -191,16 +195,21 @@ function stubDb(t: { orgs: Row[]; stakeholders: Row[]; projects: Row[]; claims: 
 				const keys = new Set(links.map((s) => s.projectKey));
 				return t.projects
 					.filter((p) => live(p) && keys.has(p.projectKey))
-					.map(({ projectKey, scoreProject, scorePointsAvailable, scorePointsScored }) => ({
-						projectKey,
-						scoreProject,
-						scorePointsAvailable,
-						scorePointsScored,
-						via: [...new Set(links.filter((s) => s.projectKey === projectKey).map((s) => s.organizationKey as string))].sort(),
-						planted: t.plantings
-							.filter((g) => live(g) && g.projectKey === projectKey)
-							.reduce((s, g) => s + (g.plantedQty as number), 0),
-					}));
+					.map(({ projectKey, scoreProject, scorePointsAvailable, scorePointsScored }) => {
+						const here = links.filter((s) => s.projectKey === projectKey);
+						const owns = here.some((s) => PLANTING_OWNER_ROLES.includes(s.stakeholderCategory as string));
+						return {
+							projectKey,
+							scoreProject,
+							scorePointsAvailable,
+							scorePointsScored,
+							via: [...new Set(here.map((s) => s.organizationKey as string))].sort(),
+							owns,
+							planted: owns
+								? t.plantings.filter((g) => live(g) && g.projectKey === projectKey).reduce((s, g) => s + (g.plantedQty as number), 0)
+								: 0,
+						};
+					});
 			}
 			if (text.includes('FROM "LinkCandidateTable"')) return [];
 			if (text.includes('FROM "StakeholderTable"')) {
@@ -220,8 +229,8 @@ function stubDb(t: { orgs: Row[]; stakeholders: Row[]; projects: Row[]; claims: 
 }
 
 // A parent over two live listings and one soft-deleted one, a lone org
-// beside them. A is a stakeholder in X twice (two scraped rows, one project),
-// B in Y, the deleted D in W, the lone Z in V.
+// beside them. A develops X (two scraped rows, one project), B produces Y,
+// the deleted D sponsors W, the lone Z is a nursery on V.
 const fixture = () => ({
 	orgs: [
 		{ organizationKey: "P", organizationParentKey: null, isParent: true, deletedAt: null },
@@ -231,11 +240,11 @@ const fixture = () => ({
 		{ organizationKey: "Z", organizationParentKey: null, deletedAt: null },
 	],
 	stakeholders: [
-		{ organizationKey: "A", projectKey: "X", stakeholderCategory: "developer", deletedAt: null },
-		{ organizationKey: "A", projectKey: "X", stakeholderCategory: "developer", deletedAt: null },
-		{ organizationKey: "B", projectKey: "Y", stakeholderCategory: "funder", deletedAt: null },
-		{ organizationKey: "B", projectKey: "Y", stakeholderCategory: "funder", deletedAt: gone },
-		{ organizationKey: "D", projectKey: "W", stakeholderCategory: "funder", deletedAt: null },
+		{ organizationKey: "A", projectKey: "X", stakeholderCategory: "developer_ish", deletedAt: null },
+		{ organizationKey: "A", projectKey: "X", stakeholderCategory: "developer_ish", deletedAt: null },
+		{ organizationKey: "B", projectKey: "Y", stakeholderCategory: "producer_ish", deletedAt: null },
+		{ organizationKey: "B", projectKey: "Y", stakeholderCategory: "producer_ish", deletedAt: gone },
+		{ organizationKey: "D", projectKey: "W", stakeholderCategory: "sponsor_ish", deletedAt: null },
 		{ organizationKey: "Z", projectKey: "V", stakeholderCategory: "nursery", deletedAt: null },
 	],
 	projects: [
@@ -265,7 +274,7 @@ describe("scoreOneOrg", () => {
 		await scoreOneOrg(db, "P", "run-1");
 
 		const subtree = ["P", "A", "B"];
-		expect(sql.map((q) => q.values)).toEqual([[subtree, subtree], [], [subtree], [subtree]]);
+		expect(sql.map((q) => q.values)).toEqual([[subtree, subtree, PLANTING_OWNER_ROLES, subtree], [], [subtree], [subtree]]);
 		for (const q of [sql[0], sql[2], sql[3]]) expect(q.text).toMatch(/"deletedAt" IS NULL/);
 		expect(sql[2].text).toMatch(/"isValidated" IS TRUE/);
 		expect(sql[2].text).toMatch(/"validatedManifestSha" IS NOT DISTINCT FROM s\."captureManifestSha"/);
@@ -283,7 +292,7 @@ describe("scoreOneOrg", () => {
 					scoreOrgFinal: 0.28125, // 0.375 × 750/1000
 					scoreRatioDisclosure: 0.75,
 					scoreCohort: "reviewed",
-					primaryStakeholderCategory: "developer", // A's two rows outvote B's one
+					primaryStakeholderCategory: "developer_ish", // A's two rows outvote B's one
 					scoreLastUpdatedAt: expect.any(Date),
 					scoreOrgFlag: false,
 				},
@@ -368,5 +377,38 @@ describe("scoreOneOrg", () => {
 		const { db, updates } = stubDb(f);
 		await scoreOneOrg(db, "P", "run-1");
 		expect(updates[0].data).toMatchObject({ scoreRatioDisclosure: 1, scoreOrgFinal: 0.375, scoreSumUndisclosed: -740 });
+	});
+
+	it("counts a project's plantings only where the subtree holds an owning role: a sponsor's project stays in the mean", async () => {
+		const f = fixture();
+		for (const s of f.stakeholders) if (s.organizationKey === "B") s.stakeholderCategory = "sponsor_ish";
+		const { db, updates, inputs } = stubDb(f);
+		await scoreOneOrg(db, "P", "run-1");
+		expect(inputs.created[0]).toMatchObject([{ projectKey: "X", plantedQty: 500 }, { projectKey: "Y", plantedQty: 0 }]);
+		expect(updates[0].data).toMatchObject({
+			scoreOrgPreClaim: 0.375,
+			scoreSumPlantedQty: 500,
+			scoreSumClaimed: 1000,
+			scoreRatioDisclosure: 0.5,
+			scoreOrgFinal: 0.1875,
+			scoreCohort: "reviewed",
+		});
+	});
+
+	it("an org that owns no plantings has no ratio, whatever it claims: never 0, never full disclosure", async () => {
+		const f = fixture();
+		for (const s of f.stakeholders) s.stakeholderCategory = "sponsor_ish";
+		const { db, updates, claimInputs } = stubDb(f);
+		await scoreOneOrg(db, "P", "run-1");
+		expect(updates[0].data).toMatchObject({
+			scoreOrgPreClaim: 0.375,
+			scoreOrgFinal: 0.375,
+			scoreSumPlantedQty: 0,
+			scoreSumClaimed: null,
+			scoreSumUndisclosed: null,
+			scoreRatioDisclosure: null,
+			scoreCohort: "unreviewed",
+		});
+		expect(claimInputs.created).toEqual([]);
 	});
 });

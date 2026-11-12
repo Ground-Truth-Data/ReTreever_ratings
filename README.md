@@ -100,6 +100,15 @@ A test holds this table equal to `SCORE_MATRIX`.
    "claims not yet reviewed" cohort has no ratio, so its score is the weighted
    mean alone.
 
+**Whose trees they are.** A project's plantings belong only to the
+organizations that hold an owning role on it: developer, producer or
+landowner (`plantingOwnerRoles` in `scoreConfig.json`). A sponsor,
+marketplace or research partner is credited with the project's documentation
+in its weighted mean, never with its trees. An organization that owns no
+plantings has no disclosure ratio whatever it claims (neither 0 nor full
+disclosure): it is ranked with the "claims not yet reviewed" cohort, on its
+weighted mean alone.
+
 An organization with nothing scored has no score and no rating (null), not a
 rating of 0.
 

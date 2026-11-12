@@ -3,8 +3,8 @@ import { rankOrgs, scoreOneOrg } from "./orgScore.js";
 import { fieldPoints, scoreOneProject } from "./projectScore.js";
 import config from "./scoreConfig.json" with { type: "json" };
 
-/** Six orgs, one per dispute the method must settle the same way every run. */
-export const GOLDEN_ORGS = ["noClaim", "validated", "overClaim", "unvalidated", "restated", "nothing"] as const;
+/** Eight orgs, one per dispute the method must settle the same way every run. */
+export const GOLDEN_ORGS = ["noClaim", "validated", "overClaim", "unvalidated", "restated", "nothing", "sponsor", "developer"] as const;
 export type GoldenOrg = (typeof GOLDEN_ORGS)[number];
 
 export const GOLDEN_SERVED: Prisma.OrganizationTableWhereInput = { isParent: true, deletedAt: null };
@@ -13,13 +13,16 @@ const SQUARE = { type: "Polygon", coordinates: [[[0, 0], [0.01, 0], [0.01, 0.01]
 
 type Site = { latLon: boolean; polygon: object; planted: number; crop: boolean };
 
-const SITES: Record<Exclude<GoldenOrg, "nothing">, Site> = {
+const SITES: Record<Exclude<GoldenOrg, "nothing" | "sponsor" | "developer">, Site> = {
 	noClaim: { latLon: true, polygon: SQUARE, planted: 500, crop: true },
 	validated: { latLon: false, polygon: SQUARE, planted: 800, crop: true },
 	overClaim: { latLon: true, polygon: {}, planted: 500, crop: true },
 	unvalidated: { latLon: true, polygon: SQUARE, planted: 500, crop: true },
 	restated: { latLon: true, polygon: SQUARE, planted: 500, crop: false },
 };
+
+/** One project two orgs share: the developer owns its trees, the sponsor funds them. */
+const CO_FUNDED = { site: { latLon: false, polygon: SQUARE, planted: 600, crop: true }, roles: { developer: "developer_ish", sponsor: "sponsor_ish" } } as const;
 
 type Claim = {
 	key: string;
@@ -48,28 +51,34 @@ const CLAIMS: Partial<Record<GoldenOrg, Claim[]>> = {
 		{ key: "restated-6", qty: 7000, validated: true, claimDt: "2026-03-01", category: "shrubs" },
 		{ key: "restated-7", qty: null, validated: true, ending: true, supersedes: "restated-6", category: "shrubs" },
 	],
+	developer: [{ key: "developer-1", qty: 1500, validated: true }],
+	// Ten times the project's trees: 0.1 if a sponsor owned them, 1 if it claimed six.
+	sponsor: [{ key: "sponsor-1", qty: 6000, validated: true }],
 };
 
-/** Seeds the six orgs, a parent each over its own project and records. */
+async function seedProject(db: PrismaClient, name: string, site: Site, stakeholders: [organizationKey: string, role: string][]): Promise<void> {
+	const projectKey = `p-${name}`;
+	await db.projectTable.create({ data: { projectKey, projectName: `${name} mangroves` } });
+	for (const [organizationKey, stakeholderCategory] of stakeholders)
+		await db.stakeholderTable.create({
+			data: { stakeholderKey: `s-${organizationKey}`, organizationKey, projectKey, parentKey: projectKey, parentTable: "projectTable", stakeholderCategory },
+		});
+	const landKey = `l-${name}`;
+	await db.landTable.create({
+		data: { landKey, landName: "Plot 1", projectKey, hectares: 1, ...(site.latLon ? { latitude: -3.1, longitude: 39.6 } : {}) },
+	});
+	await db.polygonTable.create({ data: { polygonKey: `g-${name}`, landKey, geometry: site.polygon } });
+	await db.plantingTable.create({ data: { plantingKey: `t-${name}`, projectKey, parentKey: landKey, parentTable: "landTable", plantedQty: site.planted } });
+	if (site.crop) await db.cropTable.create({ data: { cropKey: `c-${name}`, cropName: "Rhizophora mucronata", projectKey } });
+}
+
+/** Seeds the eight orgs, a parent each over its own project and records;
+ * the sponsor and the developer share one. */
 export async function seedGolden(db: PrismaClient): Promise<void> {
 	for (const org of GOLDEN_ORGS) {
 		const organizationKey = `g-${org}`;
 		await db.organizationTable.create({ data: { organizationKey, organizationName: org, isParent: true } });
-		const site = org === "nothing" ? null : SITES[org];
-		if (site) {
-			const projectKey = `p-${org}`;
-			await db.projectTable.create({ data: { projectKey, projectName: `${org} mangroves` } });
-			await db.stakeholderTable.create({
-				data: { stakeholderKey: `s-${org}`, organizationKey, projectKey, parentKey: projectKey, parentTable: "projectTable", stakeholderCategory: "developer" },
-			});
-			const landKey = `l-${org}`;
-			await db.landTable.create({
-				data: { landKey, landName: "Plot 1", projectKey, hectares: 1, ...(site.latLon ? { latitude: -3.1, longitude: 39.6 } : {}) },
-			});
-			await db.polygonTable.create({ data: { polygonKey: `g-${org}`, landKey, geometry: site.polygon } });
-			await db.plantingTable.create({ data: { plantingKey: `t-${org}`, projectKey, parentKey: landKey, parentTable: "landTable", plantedQty: site.planted } });
-			if (site.crop) await db.cropTable.create({ data: { cropKey: `c-${org}`, cropName: "Rhizophora mucronata", projectKey } });
-		}
+		if (org !== "nothing" && org !== "sponsor" && org !== "developer") await seedProject(db, org, SITES[org], [[organizationKey, "developer_ish"]]);
 		for (const [i, c] of (CLAIMS[org] ?? []).entries()) {
 			const sourceKey = `src-${c.key}`;
 			const captured = `sha-${c.key}`;
@@ -98,6 +107,7 @@ export async function seedGolden(db: PrismaClient): Promise<void> {
 			});
 		}
 	}
+	await seedProject(db, "coFunded", CO_FUNDED.site, Object.entries(CO_FUNDED.roles).map(([org, role]) => [`g-${org}`, role]));
 }
 
 export type GoldenOutcome = {

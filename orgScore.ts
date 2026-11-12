@@ -1,5 +1,6 @@
 import type { Prisma, PrismaClient } from "$parent/prisma/generated/prisma-postgres/client.js";
 import { clustersOf, type FoldPair, foldPairs } from "./projectClusters.js";
+import config from "./scoreConfig.json" with { type: "json" };
 import { MAX_DEPTH, orgSubtree } from "./subtree.js";
 
 export type OrgScoreDb = Pick<
@@ -67,6 +68,9 @@ export async function propagateDirtyToParents(db: OrgScoreDb): Promise<number> {
 	return marked;
 }
 
+/** The stakeholder roles whose org owns a project's plantings (RT-0027). */
+export const PLANTING_OWNER_ROLES: readonly string[] = config.plantingOwnerRoles;
+
 /** A live project in an org's subtree, as the org score reads it. */
 export type LinkedProject = {
 	projectKey: string;
@@ -74,6 +78,9 @@ export type LinkedProject = {
 	scorePointsAvailable: number | null;
 	scorePointsScored: number | null;
 	via: string[];
+	/** The subtree holds an owning role on it. */
+	owns: boolean;
+	/** Its live plantings, or 0 when the subtree does not own them. */
 	planted: number;
 };
 
@@ -106,6 +113,7 @@ export function foldClusters(projects: LinkedProject[], pairs: FoldPair[]): Link
 				scorePointsAvailable: points((m) => m.scorePointsAvailable),
 				scorePointsScored: points((m) => m.scorePointsScored),
 				via: [...new Set(members.flatMap((m) => m.via))].sort(),
+				owns: members.some((m) => m.owns),
 				planted: Math.max(...members.map((m) => m.planted)),
 			},
 		];
@@ -144,11 +152,12 @@ export type Disclosure = {
  * Planted over claimed, capped at 1, over the current claims that state a
  * tree count. With none, the org has no reviewed claim: no ratio, and its
  * own cohort. A count of 0 claims no trees, so everything planted is
- * disclosed.
+ * disclosed. `planted` null is an org that owns no plantings: its claims
+ * have nothing of its own to be measured against, so no ratio either.
  */
-export function disclosure(planted: number, claims: CurrentClaim[]): Disclosure {
+export function disclosure(planted: number | null, claims: CurrentClaim[]): Disclosure {
 	const counted = claims.filter((c) => c.claimQty !== null);
-	if (counted.length === 0) return { cohort: "unreviewed", ratio: null, sumClaimed: null, claimKeys: [] };
+	if (planted === null || counted.length === 0) return { cohort: "unreviewed", ratio: null, sumClaimed: null, claimKeys: [] };
 	const sumClaimed = counted.reduce((s, c) => s + Number(c.claimQty), 0);
 	return {
 		cohort: "reviewed",
@@ -211,7 +220,7 @@ export async function scoreOneOrg(db: OrgScoreDb, organizationKey: string, score
 
 	// Tier 4: every live project any org in the subtree is a stakeholder in,
 	// once each however many rows point at it, with the subtree orgs that link
-	// it and its live plantings.
+	// it and its live plantings when the subtree holds an owning role on it.
 	const linked = await db.$queryRaw<LinkedProject[]>`
             SELECT pt."projectKey", pt."scoreProject", pt."scorePointsAvailable", pt."scorePointsScored",
                 ARRAY(
@@ -222,12 +231,22 @@ export async function scoreOneOrg(db: OrgScoreDb, organizationKey: string, score
                       AND st."deletedAt" IS NULL
                     ORDER BY st."organizationKey"
                 ) AS via,
-                (
+                o.owns,
+                CASE WHEN o.owns THEN (
                     SELECT COALESCE(SUM(p."plantedQty"), 0)::int
                     FROM "PlantingTable" p
                     WHERE p."projectKey" = pt."projectKey" AND p."deletedAt" IS NULL
-                ) AS planted
+                ) ELSE 0 END AS planted
             FROM "ProjectTable" pt
+            CROSS JOIN LATERAL (
+                SELECT EXISTS (
+                    SELECT 1 FROM "StakeholderTable" st
+                    WHERE st."projectKey" = pt."projectKey"
+                      AND st."organizationKey" = ANY(${localOrgIds}::text[])
+                      AND st."deletedAt" IS NULL
+                      AND st."stakeholderCategory" = ANY(${PLANTING_OWNER_ROLES}::text[])
+                ) AS owns
+            ) o
             WHERE pt."deletedAt" IS NULL
               AND pt."projectKey" IN (
                 SELECT st."projectKey"
@@ -250,11 +269,11 @@ export async function scoreOneOrg(db: OrgScoreDb, organizationKey: string, score
 		0,
 	);
 
-	// Tier 5: the subtree's current claims against the plantings of the union
-	// of its projects. Nothing scored has no claim to weigh either.
+	// Tier 5: the subtree's current claims against the plantings it owns.
+	// Nothing scored has no claim to weigh either.
 	const scoreSumPlantedQty = projects.reduce((sum, p) => sum + p.planted, 0);
-	const told =
-		scoreOrgPreClaim === null ? null : disclosure(scoreSumPlantedQty, await currentClaims(db, localOrgIds));
+	const owned = projects.some((p) => p.owns) ? scoreSumPlantedQty : null;
+	const told = scoreOrgPreClaim === null ? null : disclosure(owned, await currentClaims(db, localOrgIds));
 	const scoreSumClaimed = told?.sumClaimed ?? null;
 	const scoreSumUndisclosed = scoreSumClaimed === null ? null : scoreSumClaimed - scoreSumPlantedQty;
 	const scoreOrgFinal = scoreOrgPreClaim === null ? null : scoreOrgPreClaim * (told?.ratio ?? 1);

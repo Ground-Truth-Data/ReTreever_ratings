@@ -3,7 +3,7 @@ import { pgliteDb, type TestDb } from "$parent/tests/pglite/pgliteDb";
 import { GOLDEN_ORGS, type GoldenOrg, type GoldenOutcome, runGolden, seedGolden } from "./golden.fixture";
 import { matrixPoints } from "./scoreMatrix";
 
-// The method's outcomes, pinned: six orgs scored from seeded records with the
+// The method's outcomes, pinned: eight orgs scored from seeded records with the
 // live weights, ranked within the served population, each given its cohort.
 // A change to the method or a weight moves a row here, and the diff says which.
 
@@ -18,24 +18,30 @@ beforeEach(async () => {
 	await seedGolden(t.prisma);
 });
 
-// Every project offers 82 points under today's schema and weights; the
-// comments say what each org lost or kept.
+// Every project offers 82 points under today's schema and weights (the
+// co-funded one 84: two stakeholder rows); the comments say what each org
+// lost or kept. The reviewed cohort is four, so its percentiles are quarters.
 const GOLDEN: Record<GoldenOrg, GoldenOutcome> = {
 	// 43/82, no claim: its own cohort, the pre-claim score, tied with unvalidated.
 	noClaim: { final: 0.52439, ratio: null, cohort: "unreviewed", percentile: 1, rank: 1, claimKeys: [] },
 	// No coordinates: 33/82 × 800/1000.
 	validated: { final: 0.321951, ratio: 0.8, cohort: "reviewed", percentile: 1, rank: 1, claimKeys: ["validated-1"] },
 	// A `{}` polygon earns nothing: 23/82 × 500/100 capped at 1.
-	overClaim: { final: 0.280488, ratio: 1, cohort: "reviewed", percentile: 0.666667, rank: 2, claimKeys: ["overClaim-1"] },
+	overClaim: { final: 0.280488, ratio: 1, cohort: "reviewed", percentile: 0.75, rank: 2, claimKeys: ["overClaim-1"] },
 	// Its only claim is unvalidated: no ratio, never full disclosure among the reviewed.
 	unvalidated: { final: 0.52439, ratio: null, cohort: "unreviewed", percentile: 1, rank: 1, claimKeys: [] },
 	// 38/68 (no crop) × 500/(1000 + 250): the restatement and the latest seedlings claim.
-	restated: { final: 0.223529, ratio: 0.4, cohort: "reviewed", percentile: 0.333333, rank: 3, claimKeys: ["restated-2", "restated-5"] },
+	restated: { final: 0.223529, ratio: 0.4, cohort: "reviewed", percentile: 0.5, rank: 3, claimKeys: ["restated-2", "restated-5"] },
 	// No project: null, unranked, no cohort.
 	nothing: { final: null, ratio: null, cohort: null, percentile: null, rank: null, claimKeys: [] },
+	// Funds the co-funded project and claims 6000 of its trees, owns none of
+	// them: no ratio, its claim summed nowhere, its mean 35/84 kept whole.
+	sponsor: { final: 0.416667, ratio: null, cohort: "unreviewed", percentile: 0.333333, rank: 3, claimKeys: [] },
+	// Develops it, so owns its 600 trees: 35/84 × 600/1500.
+	developer: { final: 0.166667, ratio: 0.4, cohort: "reviewed", percentile: 0.25, rank: 4, claimKeys: ["developer-1"] },
 };
 
-describe("golden: six disputes, settled", () => {
+describe("golden: eight disputes, settled", () => {
 	it("pins every org's score, ratio, cohort, percentile, rank and the claims it summed", async () => {
 		expect(await runGolden(t.prisma, matrixPoints())).toEqual(GOLDEN);
 	});
@@ -50,7 +56,7 @@ describe("golden: six disputes, settled", () => {
 		const after = await runGolden(t.prisma, new Map([...matrixPoints(), ["cropName", 0]]), "golden-2");
 
 		const moved = GOLDEN_ORGS.filter((o) => before[o].final !== after[o].final);
-		expect(moved).toEqual(["noClaim", "validated", "overClaim", "unvalidated"]);
+		expect(moved).toEqual(["noClaim", "validated", "overClaim", "unvalidated", "sponsor", "developer"]);
 		for (const o of GOLDEN_ORGS) {
 			expect(after[o].cohort, o).toBe(before[o].cohort);
 			expect(after[o].ratio, o).toBe(before[o].ratio);

@@ -21,7 +21,7 @@ const org = (organizationKey: string, organizationParentKey: string | null = nul
 async function project(projectKey: string, organizationKey: string, scoreProject: number, scored: number, available: number, planted: number) {
 	await t.prisma.projectTable.create({ data: { projectKey, projectName: projectKey, scoreProject, scorePointsScored: scored, scorePointsAvailable: available } });
 	await t.prisma.stakeholderTable.create({
-		data: { stakeholderKey: `s-${projectKey}`, organizationKey, projectKey, parentKey: projectKey, parentTable: "projectTable", stakeholderCategory: "developer" },
+		data: { stakeholderKey: `s-${projectKey}`, organizationKey, projectKey, parentKey: projectKey, parentTable: "projectTable", stakeholderCategory: "developer_ish" },
 	});
 	await t.prisma.plantingTable.create({ data: { plantingKey: `t-${projectKey}`, projectKey, parentKey: projectKey, parentTable: "projectTable", plantedQty: planted } });
 }
