@@ -1,4 +1,5 @@
 import type { PrismaClient } from "$parent/prisma/generated/prisma-postgres/client.js";
+import { clustersOf, type FoldPair, foldPairs } from "./projectClusters.js";
 import { MAX_DEPTH, orgSubtree } from "./subtree.js";
 
 export type OrgScoreDb = Pick<
@@ -61,6 +62,51 @@ export async function propagateDirtyToParents(db: OrgScoreDb): Promise<number> {
 	return marked;
 }
 
+/** A live project in an org's subtree, as the org score reads it. */
+export type LinkedProject = {
+	projectKey: string;
+	scoreProject: number | null;
+	scorePointsAvailable: number | null;
+	scorePointsScored: number | null;
+	via: string[];
+	planted: number;
+};
+
+/**
+ * A cluster of folded listings as one unit, under its first key: the mean of
+ * its scored members' score and points, the union of `via`, and the largest
+ * member's planted (`sameAs` lists the same trees; a `partOf` whole holds its
+ * sites'). Unfolded projects pass through untouched, in their order.
+ */
+export function foldClusters(projects: LinkedProject[], pairs: FoldPair[]): LinkedProject[] {
+	const byKey = new Map(projects.map((p) => [p.projectKey, p]));
+	const clusterOf = new Map(clustersOf([...byKey.keys()], pairs).flatMap((c) => c.map((k) => [k, c] as const)));
+	return projects.flatMap((p) => {
+		const keys = clusterOf.get(p.projectKey) ?? [p.projectKey];
+		if (keys.length === 1) return [p];
+		if (keys[0] !== p.projectKey) return [];
+		const members = keys.map((k) => byKey.get(k) as LinkedProject);
+		const scored = members.filter((m) => m.scoreProject !== null);
+		// Number(): the driver hands `scoreProject` back as a Decimal.
+		const mean = (f: (m: LinkedProject) => number | null) =>
+			scored.length ? scored.reduce((s, m) => s + Number(f(m) ?? 0), 0) / scored.length : null;
+		const points = (f: (m: LinkedProject) => number | null) => {
+			const m = mean(f);
+			return m === null ? null : Math.round(m);
+		};
+		return [
+			{
+				projectKey: p.projectKey,
+				scoreProject: mean((m) => m.scoreProject),
+				scorePointsAvailable: points((m) => m.scorePointsAvailable),
+				scorePointsScored: points((m) => m.scorePointsScored),
+				via: [...new Set(members.flatMap((m) => m.via))].sort(),
+				planted: Math.max(...members.map((m) => m.planted)),
+			},
+		];
+	});
+}
+
 export async function scoreOneOrg(db: OrgScoreDb, organizationKey: string, scoreRunId: string): Promise<void> {
 	const org = await db.organizationTable.findUnique({
 		where: { organizationKey },
@@ -83,16 +129,7 @@ export async function scoreOneOrg(db: OrgScoreDb, organizationKey: string, score
 	// Tier 4: every live project any org in the subtree is a stakeholder in,
 	// once each however many rows point at it, with the subtree orgs that link
 	// it and its live plantings.
-	const projects = await db.$queryRaw<
-		Array<{
-			projectKey: string;
-			scoreProject: number | null;
-			scorePointsAvailable: number | null;
-			scorePointsScored: number | null;
-			via: string[];
-			planted: number;
-		}>
-	>`
+	const linked = await db.$queryRaw<LinkedProject[]>`
             SELECT pt."projectKey", pt."scoreProject", pt."scorePointsAvailable", pt."scorePointsScored",
                 ARRAY(
                     SELECT DISTINCT st."organizationKey"
@@ -116,6 +153,8 @@ export async function scoreOneOrg(db: OrgScoreDb, organizationKey: string, score
                   AND st."deletedAt" IS NULL
               )
         `;
+	// Listings a person called one planting, inside this family, count once.
+	const projects = linked.length > 1 ? foldClusters(linked, await foldPairs(db)) : linked;
 	const scored = projects.filter((p) => p.scoreProject !== null);
 
 	const scoreOrgPreClaim =

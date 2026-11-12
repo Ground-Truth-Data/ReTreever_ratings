@@ -139,6 +139,7 @@ function stubDb(t: { orgs: Row[]; stakeholders: Row[]; projects: Row[]; claims: 
 							.reduce((s, g) => s + (g.plantedQty as number), 0),
 					}));
 			}
+			if (text.includes('FROM "LinkCandidateTable"')) return [];
 			if (text.includes('FROM "StakeholderTable"')) {
 				const counts = new Map<string, number>();
 				for (const s of t.stakeholders) {
@@ -200,8 +201,8 @@ describe("scoreOneOrg", () => {
 		await scoreOneOrg(db, "P", "run-1");
 
 		const subtree = ["P", "A", "B"];
-		expect(sql.map((q) => q.values)).toEqual([[subtree, subtree], [subtree]]);
-		for (const q of sql) expect(q.text).toMatch(/"deletedAt" IS NULL/);
+		expect(sql.map((q) => q.values)).toEqual([[subtree, subtree], [], [subtree]]);
+		for (const q of [sql[0], sql[2]]) expect(q.text).toMatch(/"deletedAt" IS NULL/);
 		expect(updates).toEqual([
 			{
 				where: { organizationKey: "P" },
