@@ -5,6 +5,7 @@ import {
 	rankOrgs,
 	scoreOneOrg,
 } from "./orgScore.js";
+import { servedOrgWhere } from "$parent/src/lib/core/servedOrgs.js";
 import { takeRunLock } from "$parent/src/lib/server/runLock.js";
 import { scoreInBatches, withRetry } from "./scoreRun.js";
 import { closeScoreDb, openScoreRun, scoreConfig as config, scoreDb } from "./scoreDb.js";
@@ -116,7 +117,7 @@ export async function scoreAndRankOrgs(
 		);
 	}
 
-	await rankOrgs(prisma);
+	await rankOrgs(prisma, servedOrgWhere());
 	return failed;
 }
 
@@ -144,7 +145,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 					`\n⚠️  ${failed.length} organization(s) failed after retries:\n  ${failed.join("\n  ")}`,
 				);
 			}
-			await rankOrgs(prisma);
+			await rankOrgs(prisma, servedOrgWhere());
 		} else {
 			await scoreAndRankOrgs(full, batchSize);
 		}
