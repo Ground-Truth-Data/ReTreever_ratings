@@ -91,18 +91,103 @@ function recordKeyOf(tableName: string, record: object): string {
 
 export type Records = Record<string, object[]>;
 
-const populated = (value: unknown) =>
-	value !== null && value !== undefined && value !== "";
+/** Words a platform fills a required box with when it has nothing to say.
+ * Text with no letter or digit at all ("-", "...", "[]") is caught apart. */
+export const PLACEHOLDER_TEXT: ReadonlySet<string> = new Set([
+	"n/a", "na", "null", "none", "unknown", "undefined", "nan", "nil",
+	"tbd", "tba", "not available", "not specified", "not provided",
+]);
+
+/** A coordinate of exactly 0 is Null Island: the default, not a place. */
+const COORDINATE_FIELDS = new Set(["latitude", "longitude"]);
+/** A size of 0 or less measures nothing. Not `hectaresCalc`: it is derived
+ * from the geometry, rounded to 0.1, so a real sliver reads 0.0. */
+const SIZE_FIELDS = new Set(["hectares", "radius"]);
+
+type Ring = number[][];
+
+/** Planar shoelace area in square degrees: only its sign of > 0 is read. */
+function ringArea(ring: Ring): number {
+	let sum = 0;
+	for (let i = 0; i < ring.length; i++) {
+		const [x1, y1] = ring[i].map(Number);
+		const [x2, y2] = ring[(i + 1) % ring.length].map(Number);
+		sum += x1 * y2 - x2 * y1;
+	}
+	return Number.isFinite(sum) ? Math.abs(sum) / 2 : 0;
+}
+
+const outerRings = (g: Record<string, unknown>): Ring[] => {
+	const coords = g.coordinates;
+	if (!Array.isArray(coords)) return [];
+	if (g.type === "Polygon") return coords.slice(0, 1) as Ring[];
+	if (g.type === "MultiPolygon") return (coords as Ring[][]).map((p) => p?.[0]).filter(Array.isArray);
+	return [];
+};
+
+/** A Polygon or MultiPolygon (bare, or in a Feature, FeatureCollection or
+ * GeometryCollection) whose outer ring encloses area: anything else, `{}`
+ * and a point included, proves no site. */
+export function isRealPolygon(value: unknown): boolean {
+	let g = value;
+	if (typeof g === "string") {
+		try {
+			g = JSON.parse(g);
+		} catch {
+			return false;
+		}
+	}
+	if (!g || typeof g !== "object") return false;
+	const o = g as Record<string, unknown>;
+	if (o.type === "Feature") return isRealPolygon(o.geometry);
+	if (o.type === "FeatureCollection") return Array.isArray(o.features) && o.features.some(isRealPolygon);
+	if (o.type === "GeometryCollection") return Array.isArray(o.geometries) && o.geometries.some(isRealPolygon);
+	return outerRings(o).some((r) => Array.isArray(r) && r.length >= 3 && ringArea(r) > 0);
+}
+
+const asNumber = (value: unknown): number | null =>
+	typeof value === "number"
+		? value
+		: value && typeof value === "object" && "toNumber" in value && typeof value.toNumber === "function"
+			? Number(value.toNumber())
+			: null;
+
+/**
+ * Whether a field holds a value, by its type: null, blank or placeholder
+ * text (measured on dev 12 Nov: "[]", "...", "-", "n/a"), an empty object or list, an invalid date, a non-finite number, a
+ * coordinate of 0 or a size of 0 or less is not one, and `geometry` is one
+ * only as a real polygon. Booleans always are.
+ */
+export function populated(fieldName: string, value: unknown): boolean {
+	if (value === null || value === undefined) return false;
+	if (fieldName === "geometry") return isRealPolygon(value);
+	if (typeof value === "string") {
+		const text = value.trim().toLowerCase();
+		return /[\p{L}\p{N}]/u.test(text) && !PLACEHOLDER_TEXT.has(text);
+	}
+	if (value instanceof Date) return !Number.isNaN(value.getTime());
+	const n = asNumber(value);
+	if (n !== null) {
+		if (!Number.isFinite(n)) return false;
+		if (COORDINATE_FIELDS.has(fieldName)) return n !== 0;
+		if (SIZE_FIELDS.has(fieldName)) return n > 0;
+		return true;
+	}
+	if (Array.isArray(value)) return value.length > 0;
+	if (typeof value === "object") return Object.keys(value).length > 0;
+	return true;
+}
 
 function fieldScore(
 	projectKey: string,
 	recordTable: string,
 	recordKey: string | null,
-	fieldName: string,
+	field: string,
 	value: unknown,
 	pointsAvailable: number,
 ): FieldScore {
-	const isAwarded = populated(value);
+	const isAwarded = populated(field, value);
+	const fieldName = `${recordTable}.${field}`;
 	return {
 		granularProjectScoreId: crypto.randomUUID(),
 		projectKey,
@@ -116,8 +201,7 @@ function fieldScore(
 }
 
 /** Tier 1 over every record of every table: one row per scoreable field per
- * record, named `Table.field` and naming its record. Populated means not null
- * and not "". Pure. */
+ * record, named `Table.field` and naming its record; awarded when `populated`. Pure. */
 export function fieldScores(
 	projectKey: string,
 	tables: Records,
@@ -130,7 +214,7 @@ export function fieldScores(
 			for (const [fieldName, value] of Object.entries(record)) {
 				const pointsAvailable = points(fieldName);
 				if (pointsAvailable === 0) continue;
-				out.push(fieldScore(projectKey, tableName, recordKey, `${tableName}.${fieldName}`, value, pointsAvailable));
+				out.push(fieldScore(projectKey, tableName, recordKey, fieldName, value, pointsAvailable));
 			}
 		}
 	}
@@ -184,7 +268,7 @@ export function bonusableScores(
 	const ranked = (records as Record<string, unknown>[])
 		.map((record) => ({
 			record,
-			filled: fields.reduce((sum, f) => sum + (populated(record[f]) ? points(f) : 0), 0),
+			filled: fields.reduce((sum, f) => sum + (populated(f, record[f]) ? points(f) : 0), 0),
 			key: recordKeyOf(tableName, record),
 		}))
 		.sort((a, b) => b.filled - a.filled || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
@@ -203,13 +287,13 @@ export function bonusableScores(
 	const [baseline, ...bonus] = counted;
 	const baselineKey = baseline ? recordKeyOf(tableName, baseline) : null;
 	const out = fields.map((f) =>
-		fieldScore(projectKey, tableName, baselineKey, `${tableName}.${f}`, baseline?.[f], points(f)),
+		fieldScore(projectKey, tableName, baselineKey, f, baseline?.[f], points(f)),
 	);
 	for (const record of bonus) {
 		const recordKey = recordKeyOf(tableName, record);
 		for (const f of fields)
-			if (populated(record[f]))
-				out.push(fieldScore(projectKey, tableName, recordKey, `${tableName}.${f}`, record[f], points(f)));
+			if (populated(f, record[f]))
+				out.push(fieldScore(projectKey, tableName, recordKey, f, record[f], points(f)));
 	}
 	return out;
 }

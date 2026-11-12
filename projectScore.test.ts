@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { BONUSABLE, bonusableScores, fieldPoints, fieldScores, scoreOneProject } from "./projectScore";
+import { BONUSABLE, bonusableScores, fieldPoints, fieldScores, isRealPolygon, populated, scoreOneProject } from "./projectScore";
 import { SCORE_MATRIX } from "./scoreMatrix";
 
 const points = fieldPoints(new Map([["geometry", 20]]), 1);
+const SQUARE = { type: "Polygon", coordinates: [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]] };
 
 describe("fieldPoints", () => {
 	it("weights from the matrix, the default for any other field, 0 for a system field", () => {
@@ -29,6 +30,48 @@ describe("fieldPoints", () => {
 	});
 });
 
+describe("populated: a value by its type", () => {
+	it.each([
+		["landName", "Plot 4", true],
+		["landName", "unknown", false],
+		["landName", "--", false],
+		["landDesc", "...", false],
+		["motivationSource", "[]", false],
+		["cropDesc", "-\r\n", false],
+		["landDesc", "0", true],
+		["landDesc", "csm", true],
+		["hectaresCalc", 0, true],
+		["plantedQty", 0, true],
+		["plantedQty", Number.NaN, false],
+		["latitude", -3.2, true],
+		["radius", -1, false],
+		["hectares", { toNumber: () => 2.5 }, true],
+		["hectares", { toNumber: () => 0 }, false],
+		["plantingDt", new Date("x"), false],
+		["plantingDt", new Date("2026-01-01"), true],
+		["isQualityPass", false, true],
+		["plotCenter", {}, false],
+		["plotCenter", { lat: 1, lon: 2 }, true],
+		["speciesIds", [], false],
+	])("%s = %j → %s", (field, value, expected) => {
+		expect(populated(field, value)).toBe(expected);
+	});
+
+	it("a polygon is real only with an enclosing outer ring, wherever it is wrapped", () => {
+		const multi = { type: "MultiPolygon", coordinates: [[[[5, 5], [5, 5], [5, 5]]], SQUARE.coordinates] };
+		expect(isRealPolygon(SQUARE)).toBe(true);
+		expect(isRealPolygon(JSON.stringify(SQUARE))).toBe(true);
+		expect(isRealPolygon(multi)).toBe(true);
+		expect(isRealPolygon({ type: "FeatureCollection", features: [{ type: "Feature", geometry: multi }] })).toBe(true);
+		expect(isRealPolygon({ type: "GeometryCollection", geometries: [SQUARE] })).toBe(true);
+		expect(isRealPolygon("{}")).toBe(false);
+		expect(isRealPolygon("not json")).toBe(false);
+		expect(isRealPolygon({ type: "Polygon", coordinates: [] })).toBe(false);
+		expect(isRealPolygon({ type: "Polygon", coordinates: [[[0, 0], [1, 1]]] })).toBe(false);
+		expect(isRealPolygon({ type: "LineString", coordinates: [[0, 0], [1, 1], [1, 0]] })).toBe(false);
+	});
+});
+
 describe("fieldScores", () => {
 	it("one row per scoreable field per record, named Table.field; populated is not null and not empty", () => {
 		const rows = fieldScores(
@@ -36,7 +79,7 @@ describe("fieldScores", () => {
 			{
 				LandTable: [
 					{ landKey: "l1", hectares: 3, geometry: null, landName: "" },
-					{ landKey: "l2", hectares: null, geometry: "{}", landName: "x" },
+					{ landKey: "l2", hectares: null, geometry: SQUARE, landName: "x" },
 				],
 			},
 			points,
@@ -52,6 +95,33 @@ describe("fieldScores", () => {
 		expect(rows.every((r) => r.projectKey === "p")).toBe(true);
 		expect(new Set(rows.map((r) => r.granularProjectScoreId)).size).toBe(6);
 		expect(rows.map((r) => `${r.recordTable}:${r.recordKey}`)).toEqual([...Array(3).fill("LandTable:l1"), ...Array(3).fill("LandTable:l2")]);
+	});
+
+	it("a placeholder earns nothing: {} geometry, a point, a zero-area ring, blank or 'N/A' text, Null Island, a 0 size", () => {
+		const rows = fieldScores(
+			"p",
+			{
+				PolygonTable: [
+					{ polygonKey: "g1", geometry: {} },
+					{ polygonKey: "g2", geometry: { type: "Point", coordinates: [1, 2] } },
+					{ polygonKey: "g3", geometry: { type: "Polygon", coordinates: [[[0, 0], [1, 1], [2, 2], [0, 0]]] } },
+					{ polygonKey: "g4", geometry: { type: "Feature", geometry: SQUARE } },
+				],
+				LandTable: [{ landKey: "l1", landName: " N/A ", landDesc: "  ", latitude: 0, longitude: 0.5, hectares: 0 }],
+			},
+			points,
+		);
+		expect(rows.map((r) => `${r.recordKey}.${r.fieldName.split(".")[1]}=${r.pointsAwarded}`)).toEqual([
+			"g1.geometry=0",
+			"g2.geometry=0",
+			"g3.geometry=0",
+			"g4.geometry=20",
+			"l1.landName=0",
+			"l1.landDesc=0",
+			"l1.latitude=0",
+			"l1.longitude=1",
+			"l1.hectares=0",
+		]);
 	});
 
 	it("refuses a record it cannot name: a point must lead to its row", () => {
@@ -171,16 +241,16 @@ const fixture = (): Record<string, Row[]> => ({
 			landKey: "l1",
 			projectKey: "A",
 			hectares: 3,
-			geometry: "{}",
+			geometry: SQUARE,
 			PolygonTable: [
-				{ polygonKey: "g1", landKey: "l1", geometry: "{}" },
-				{ polygonKey: "g2", landKey: "l1", geometry: "{}", deletedAt: gone },
+				{ polygonKey: "g1", landKey: "l1", geometry: SQUARE },
+				{ polygonKey: "g2", landKey: "l1", geometry: SQUARE, deletedAt: gone },
 			],
 		},
 		{ landKey: "l2", projectKey: "A", hectares: null, geometry: null, PolygonTable: [] },
 		{ landKey: "l3", projectKey: "B", hectares: 1, geometry: null, PolygonTable: [] },
 		{ landKey: "l4", projectKey: "L", hectares: 2, geometry: null, PolygonTable: [] },
-		{ landKey: "l5", projectKey: "A", hectares: 9, geometry: "{}", deletedAt: gone, PolygonTable: [] },
+		{ landKey: "l5", projectKey: "A", hectares: 9, geometry: SQUARE, deletedAt: gone, PolygonTable: [] },
 	],
 	cropTable: [{ cropKey: "c1", projectKey: "B", cropName: "Rhizophora" }],
 });
