@@ -8,6 +8,7 @@ import {
 import { servedOrgWhere } from "$parent/src/lib/core/servedOrgs.js";
 import { takeRunLock } from "$parent/src/lib/server/runLock.js";
 import { scoreInBatches, withRetry } from "./scoreRun.js";
+import { snapshotRun } from "./scoreSnapshot.js";
 import { closeScoreDb, openScoreRun, scoreConfig as config, scoreDb } from "./scoreDb.js";
 
 /** Returns the organizationKeys that failed even after retries — never throws
@@ -118,6 +119,11 @@ export async function scoreAndRankOrgs(
 	}
 
 	await rankOrgs(prisma, servedOrgWhere());
+	// A run with a failed org left it on its old score: not a whole run, so never completed or publishable.
+	if (scoreRunId && failed.length === 0) {
+		const drifted = await snapshotRun(prisma, scoreRunId);
+		console.log(`\n📸 Snapshot of run ${scoreRunId} written${drifted.length ? `; ${drifted.length} rows do not reconcile:\n  ${drifted.join("\n  ")}` : ", every row reconciles"}`);
+	}
 	return failed;
 }
 
