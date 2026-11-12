@@ -21,7 +21,16 @@ const SITES: Record<Exclude<GoldenOrg, "nothing">, Site> = {
 	restated: { latLon: true, polygon: SQUARE, planted: 500, crop: false },
 };
 
-type Claim = { key: string; qty: number | null; validated: boolean; claimDt?: string; supersedes?: string; category?: string };
+type Claim = {
+	key: string;
+	qty: number | null;
+	validated: boolean;
+	stale?: boolean;
+	ending?: boolean;
+	claimDt?: string;
+	supersedes?: string;
+	category?: string;
+};
 
 const CLAIMS: Partial<Record<GoldenOrg, Claim[]>> = {
 	validated: [{ key: "validated-1", qty: 1000, validated: true }],
@@ -30,11 +39,14 @@ const CLAIMS: Partial<Record<GoldenOrg, Claim[]>> = {
 	restated: [
 		{ key: "restated-1", qty: 2000, validated: true, claimDt: "2025-01-01" },
 		{ key: "restated-2", qty: 1000, validated: true, claimDt: "2026-01-01", supersedes: "restated-1" },
-		// Unvalidated: neither counts nor retires restated-2.
-		{ key: "restated-3", qty: 9000, validated: false, claimDt: "2026-06-01", supersedes: "restated-2" },
+		// Its own capture moved on since validation: stale, so it counts for nothing.
+		{ key: "restated-3", qty: 400, validated: true, stale: true, claimDt: "2026-01-01", category: "saplings" },
 		// No claimDt, an older createdAt: the dated claim in its category is the later one.
 		{ key: "restated-4", qty: 50, validated: true, category: "seedlings" },
 		{ key: "restated-5", qty: 250, validated: true, claimDt: "2026-02-01", category: "seedlings" },
+		// Ended: an ending row names it, so the category has no current claim.
+		{ key: "restated-6", qty: 7000, validated: true, claimDt: "2026-03-01", category: "shrubs" },
+		{ key: "restated-7", qty: null, validated: true, ending: true, supersedes: "restated-6", category: "shrubs" },
 	],
 };
 
@@ -60,7 +72,17 @@ export async function seedGolden(db: PrismaClient): Promise<void> {
 		}
 		for (const [i, c] of (CLAIMS[org] ?? []).entries()) {
 			const sourceKey = `src-${c.key}`;
-			await db.sourceTable.create({ data: { sourceKey, url: `https://example.org/${c.key}`, organizationKey, isValidated: c.validated } });
+			const captured = `sha-${c.key}`;
+			await db.sourceTable.create({
+				data: {
+					sourceKey,
+					url: `https://example.org/${c.key}`,
+					organizationKey,
+					isValidated: c.validated,
+					captureManifestSha: captured,
+					...(c.validated ? { validatedManifestSha: c.stale ? "sha-older" : captured } : {}),
+				},
+			});
 			await db.claimTable.create({
 				data: {
 					claimKey: c.key,
@@ -71,6 +93,7 @@ export async function seedGolden(db: PrismaClient): Promise<void> {
 					createdAt: new Date(Date.UTC(2026, 0, 1 + i)),
 					...(c.claimDt ? { claimDt: new Date(c.claimDt) } : {}),
 					...(c.supersedes ? { supersedesClaimKey: c.supersedes } : {}),
+					...(c.ending ? { deletedAt: new Date(Date.UTC(2026, 2, 2)) } : {}),
 				},
 			});
 		}

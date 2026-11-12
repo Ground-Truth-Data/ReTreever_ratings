@@ -268,6 +268,8 @@ describe("scoreOneOrg", () => {
 		expect(sql.map((q) => q.values)).toEqual([[subtree, subtree], [], [subtree], [subtree]]);
 		for (const q of [sql[0], sql[2], sql[3]]) expect(q.text).toMatch(/"deletedAt" IS NULL/);
 		expect(sql[2].text).toMatch(/"isValidated" IS TRUE/);
+		expect(sql[2].text).toMatch(/"validatedManifestSha" IS NOT DISTINCT FROM s\."captureManifestSha"/);
+		expect(sql[2].text).toMatch(/NOT EXISTS \(SELECT 1 FROM "ClaimTable" r WHERE r\."supersedesClaimKey" = c\."claimKey"\)/);
 		expect(updates).toEqual([
 			{
 				where: { organizationKey: "P" },

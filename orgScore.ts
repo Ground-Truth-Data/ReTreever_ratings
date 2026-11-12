@@ -159,31 +159,34 @@ export function disclosure(planted: number, claims: CurrentClaim[]): Disclosure 
 }
 
 /**
- * The subtree's current claims: live, on a live validated source, not
- * superseded by another such claim, and the latest per org and category by
- * `claimDt` (a claim with none dates from its `createdAt`). An unvalidated
- * restatement neither counts nor retires the claim it restates.
+ * The subtree's current claims, as the claims log writes them: live, not
+ * named by any later row (an edit or an ending row alike), the latest per
+ * org and category by `claimDt` (a claim with none dates from its
+ * `createdAt`), and on a live source validated against its latest capture.
+ * A current claim whose source is not validated counts for nothing: the org
+ * is not handed the claim it replaced.
  */
 export function currentClaims(db: Pick<PrismaClient, "$queryRaw">, orgKeys: string[]): Promise<CurrentClaim[]> {
 	return db.$queryRaw<CurrentClaim[]>`
-		WITH valid AS (
-			SELECT c."claimKey", c."claimQty", c."organizationKey", c."claimCategory",
-			       c."claimDt", c."createdAt", c."supersedesClaimKey"
+		WITH latest AS (
+			SELECT c."claimKey", c."claimQty", c."sourceKey", ROW_NUMBER() OVER (
+				PARTITION BY c."organizationKey", c."claimCategory"
+				ORDER BY COALESCE(c."claimDt", c."createdAt") DESC NULLS LAST, c."claimKey" DESC
+			) AS n
 			FROM "ClaimTable" c
-			JOIN "SourceTable" s ON s."sourceKey" = c."sourceKey"
 			WHERE c."organizationKey" = ANY(${orgKeys}::text[])
 			  AND c."deletedAt" IS NULL
-			  AND s."deletedAt" IS NULL
-			  AND s."isValidated" IS TRUE
-		), latest AS (
-			SELECT v.*, ROW_NUMBER() OVER (
-				PARTITION BY v."organizationKey", v."claimCategory"
-				ORDER BY COALESCE(v."claimDt", v."createdAt") DESC NULLS LAST, v."claimKey" DESC
-			) AS n
-			FROM valid v
-			WHERE NOT EXISTS (SELECT 1 FROM valid r WHERE r."supersedesClaimKey" = v."claimKey")
+			  AND NOT EXISTS (SELECT 1 FROM "ClaimTable" r WHERE r."supersedesClaimKey" = c."claimKey")
 		)
-		SELECT "claimKey", "claimQty" FROM latest WHERE n = 1 ORDER BY "claimKey"
+		SELECT l."claimKey", l."claimQty"
+		FROM latest l
+		JOIN "SourceTable" s ON s."sourceKey" = l."sourceKey"
+		WHERE l.n = 1
+		  AND s."deletedAt" IS NULL
+		  AND s."isValidated" IS TRUE
+		  AND s."validatedManifestSha" IS NOT DISTINCT FROM s."captureManifestSha"
+		  AND s."validatedManifestSha" IS NOT NULL
+		ORDER BY l."claimKey"
 	`;
 }
 
