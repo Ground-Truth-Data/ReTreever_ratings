@@ -13,5 +13,6 @@
 	},
 	"defaults": {
 		"fieldPoints": 1
-	}
+	},
+	"plantingOwnerRoles": ["developer_ish", "producer_ish", "landowner_ish"]
 }
