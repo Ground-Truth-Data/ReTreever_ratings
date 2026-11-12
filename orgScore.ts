@@ -1,15 +1,14 @@
-import type { PrismaClient } from "$parent/prisma/generated/prisma-postgres/client.js";
+import type { Prisma, PrismaClient } from "$parent/prisma/generated/prisma-postgres/client.js";
 import { clustersOf, type FoldPair, foldPairs } from "./projectClusters.js";
 import { MAX_DEPTH, orgSubtree } from "./subtree.js";
 
 export type OrgScoreDb = Pick<
 	PrismaClient,
 	| "organizationTable"
-	| "claimTable"
 	| "orgScoreInputTable"
+	| "scoreClaimInputTable"
 	| "$queryRaw"
 	| "$executeRaw"
-	| "$executeRawUnsafe"
 >;
 
 /** What a child with a parent carries: nothing. Its stakeholder rows and
@@ -23,10 +22,16 @@ export const NO_SCORE = {
 	scoreSumPlantedQty: null,
 	scoreSumUndisclosed: null,
 	scoreOrgFinal: null,
-	scoreRankOverall: null,
-	scoreRankByCategory: null,
+	scoreRatioDisclosure: null,
+	scoreCohort: null,
+	scorePercentile: null,
+	scoreRank: null,
 	primaryStakeholderCategory: null,
 };
+
+/** An org with a current validated claim is ranked among its kind; one
+ * without is ranked among orgs whose claims are not yet reviewed. */
+export type Cohort = "reviewed" | "unreviewed";
 
 /** The rows a run scores: live ones — dirty unless `full`, only `orgIds`
  * when given. A soft-deleted org is never rescored, whatever its flag says. */
@@ -107,6 +112,81 @@ export function foldClusters(projects: LinkedProject[], pairs: FoldPair[]): Link
 	});
 }
 
+/**
+ * The mean of the scored projects' scores weighted by their points
+ * available, so a project with ninety fields outweighs one with nine. Null
+ * when nothing is available to score.
+ */
+export function weightedMean(projects: Pick<LinkedProject, "scoreProject" | "scorePointsAvailable">[]): number | null {
+	let weight = 0;
+	let sum = 0;
+	for (const p of projects) {
+		if (p.scoreProject === null) continue;
+		const w = Number(p.scorePointsAvailable ?? 0);
+		if (!(w > 0)) continue;
+		weight += w;
+		sum += Number(p.scoreProject) * w;
+	}
+	return weight > 0 ? sum / weight : null;
+}
+
+/** A claim as the scorer counts it: current, its source validated. */
+export type CurrentClaim = { claimKey: string; claimQty: number | null };
+
+export type Disclosure = {
+	cohort: Cohort;
+	ratio: number | null;
+	sumClaimed: number | null;
+	claimKeys: string[];
+};
+
+/**
+ * Planted over claimed, capped at 1, over the current claims that state a
+ * tree count. With none, the org has no reviewed claim: no ratio, and its
+ * own cohort. A count of 0 claims no trees, so everything planted is
+ * disclosed.
+ */
+export function disclosure(planted: number, claims: CurrentClaim[]): Disclosure {
+	const counted = claims.filter((c) => c.claimQty !== null);
+	if (counted.length === 0) return { cohort: "unreviewed", ratio: null, sumClaimed: null, claimKeys: [] };
+	const sumClaimed = counted.reduce((s, c) => s + Number(c.claimQty), 0);
+	return {
+		cohort: "reviewed",
+		ratio: sumClaimed > 0 ? Math.min(1, planted / sumClaimed) : 1,
+		sumClaimed,
+		claimKeys: counted.map((c) => c.claimKey).sort(),
+	};
+}
+
+/**
+ * The subtree's current claims: live, on a live validated source, not
+ * superseded by another such claim, and the latest per org and category by
+ * `claimDt` (a claim with none dates from its `createdAt`). An unvalidated
+ * restatement neither counts nor retires the claim it restates.
+ */
+export function currentClaims(db: Pick<PrismaClient, "$queryRaw">, orgKeys: string[]): Promise<CurrentClaim[]> {
+	return db.$queryRaw<CurrentClaim[]>`
+		WITH valid AS (
+			SELECT c."claimKey", c."claimQty", c."organizationKey", c."claimCategory",
+			       c."claimDt", c."createdAt", c."supersedesClaimKey"
+			FROM "ClaimTable" c
+			JOIN "SourceTable" s ON s."sourceKey" = c."sourceKey"
+			WHERE c."organizationKey" = ANY(${orgKeys}::text[])
+			  AND c."deletedAt" IS NULL
+			  AND s."deletedAt" IS NULL
+			  AND s."isValidated" IS TRUE
+		), latest AS (
+			SELECT v.*, ROW_NUMBER() OVER (
+				PARTITION BY v."organizationKey", v."claimCategory"
+				ORDER BY COALESCE(v."claimDt", v."createdAt") DESC NULLS LAST, v."claimKey" DESC
+			) AS n
+			FROM valid v
+			WHERE NOT EXISTS (SELECT 1 FROM valid r WHERE r."supersedesClaimKey" = v."claimKey")
+		)
+		SELECT "claimKey", "claimQty" FROM latest WHERE n = 1 ORDER BY "claimKey"
+	`;
+}
+
 export async function scoreOneOrg(db: OrgScoreDb, organizationKey: string, scoreRunId: string): Promise<void> {
 	const org = await db.organizationTable.findUnique({
 		where: { organizationKey },
@@ -157,11 +237,7 @@ export async function scoreOneOrg(db: OrgScoreDb, organizationKey: string, score
 	const projects = linked.length > 1 ? foldClusters(linked, await foldPairs(db)) : linked;
 	const scored = projects.filter((p) => p.scoreProject !== null);
 
-	const scoreOrgPreClaim =
-		scored.length > 0
-			? scored.reduce((sum, p) => sum + Number(p.scoreProject), 0) /
-				scored.length
-			: 0;
+	const scoreOrgPreClaim = weightedMean(scored);
 	const scorePointsAvailable = scored.reduce(
 		(sum, p) => sum + Number(p.scorePointsAvailable || 0),
 		0,
@@ -171,19 +247,14 @@ export async function scoreOneOrg(db: OrgScoreDb, organizationKey: string, score
 		0,
 	);
 
-	// Tier 5: the subtree's claims against the plantings of the union of its projects.
-	const claims = await db.claimTable.aggregate({
-		where: { organizationKey: { in: localOrgIds }, deletedAt: null },
-		_sum: { claimQty: true },
-	});
-	const scoreSumClaimed = claims._sum.claimQty ?? 0;
-
+	// Tier 5: the subtree's current claims against the plantings of the union
+	// of its projects. Nothing scored has no claim to weigh either.
 	const scoreSumPlantedQty = projects.reduce((sum, p) => sum + p.planted, 0);
-
-	const scoreSumUndisclosed = scoreSumClaimed - scoreSumPlantedQty;
-	const ratioDisclosure =
-		scoreSumClaimed > 0 ? scoreSumPlantedQty / scoreSumClaimed : 1.0;
-	const scoreOrgFinal = scoreOrgPreClaim * ratioDisclosure;
+	const told =
+		scoreOrgPreClaim === null ? null : disclosure(scoreSumPlantedQty, await currentClaims(db, localOrgIds));
+	const scoreSumClaimed = told?.sumClaimed ?? null;
+	const scoreSumUndisclosed = scoreSumClaimed === null ? null : scoreSumClaimed - scoreSumPlantedQty;
+	const scoreOrgFinal = scoreOrgPreClaim === null ? null : scoreOrgPreClaim * (told?.ratio ?? 1);
 
 	// Tier 8: the MODE across the subtree, alphabetical tiebreak. No categorised
 	// row leaves the column alone — a p- parent keeps the category a human
@@ -199,9 +270,15 @@ export async function scoreOneOrg(db: OrgScoreDb, organizationKey: string, score
             LIMIT 1
         `;
 
-	// What was averaged, replaced whole and stamped with the org's own time,
-	// before the flag clears: a failure between leaves the org dirty to retry.
+	// What was averaged and summed, replaced whole and stamped with the org's
+	// own time, before the flag clears: a failure between leaves the org dirty to retry.
 	const scoredAt = new Date();
+	await db.scoreClaimInputTable.deleteMany({ where: { scoreRunId, organizationKey } });
+	if (told?.claimKeys.length) {
+		await db.scoreClaimInputTable.createMany({
+			data: told.claimKeys.map((claimKey) => ({ scoreRunId, organizationKey, claimKey })),
+		});
+	}
 	await db.orgScoreInputTable.deleteMany({ where: { organizationKey } });
 	if (projects.length > 0) {
 		await db.orgScoreInputTable.createMany({
@@ -229,6 +306,8 @@ export async function scoreOneOrg(db: OrgScoreDb, organizationKey: string, score
 			scoreSumPlantedQty,
 			scoreSumUndisclosed,
 			scoreOrgFinal,
+			scoreRatioDisclosure: told?.ratio ?? null,
+			scoreCohort: told?.cohort ?? null,
 			primaryStakeholderCategory: mode?.stakeholderCategory,
 			scoreLastUpdatedAt: scoredAt,
 			scoreOrgFlag: false,
@@ -237,44 +316,36 @@ export async function scoreOneOrg(db: OrgScoreDb, organizationKey: string, score
 }
 
 /**
- * Re-rank every live scored org by percentile, overall and partitioned by
- * stakeholder category. One-shot global SQL, ~1s. A soft-deleted org is in
- * neither distribution and keeps whatever rank it last had.
+ * The published rating: each served org with a final score gets the share
+ * of its cohort scoring at or below it (CUME_DIST, so tied orgs share one
+ * percentile and the top org is 1) and its competition rank, 1 the best.
+ * Every other row, soft-deleted, unserved or null, holds neither. `served`
+ * is the site's own predicate, passed in so it is never restated here.
  */
-export async function rankOrgs(db: OrgScoreDb): Promise<void> {
+export async function rankOrgs(db: Pick<PrismaClient, "organizationTable" | "$executeRaw">, served: Prisma.OrganizationTableWhereInput): Promise<void> {
 	console.log("\n📊 Ranking organizations...");
-
-	await db.$executeRawUnsafe(`
-        UPDATE "OrganizationTable" ot
-        SET "scoreRankOverall" = ranked."scoreRankOverall"
-        FROM (
-            SELECT
-                "organizationKey",
-                ROUND(PERCENT_RANK() OVER (ORDER BY "scoreOrgFinal") * 100)::int AS "scoreRankOverall"
-            FROM "OrganizationTable"
-            WHERE "scoreOrgFinal" IS NOT NULL
-              AND "deletedAt" IS NULL
-        ) ranked
-        WHERE ot."organizationKey" = ranked."organizationKey"
-    `);
-
-	await db.$executeRawUnsafe(`
-        UPDATE "OrganizationTable" ot
-        SET "scoreRankByCategory" = ranked."scoreRankByCategory"
-        FROM (
-            SELECT
-                "organizationKey",
-                ROUND(PERCENT_RANK() OVER (
-                    PARTITION BY "primaryStakeholderCategory"
-                    ORDER BY "scoreOrgFinal"
-                ) * 100)::int AS "scoreRankByCategory"
-            FROM "OrganizationTable"
-            WHERE "primaryStakeholderCategory" IS NOT NULL
-              AND "scoreOrgFinal" IS NOT NULL
-              AND "deletedAt" IS NULL
-        ) ranked
-        WHERE ot."organizationKey" = ranked."organizationKey"
-    `);
-
-	console.log("✅ Organizations ranked");
+	const keys = (await db.organizationTable.findMany({ where: served, select: { organizationKey: true } })).map(
+		(o) => o.organizationKey,
+	);
+	await db.$executeRaw`
+		UPDATE "OrganizationTable" ot
+		SET "scorePercentile" = ranked.p, "scoreRank" = ranked.k
+		FROM (
+			SELECT o."organizationKey", r.p, r.k
+			FROM "OrganizationTable" o
+			LEFT JOIN (
+				SELECT "organizationKey",
+					CUME_DIST() OVER (PARTITION BY "scoreCohort" ORDER BY "scoreOrgFinal") AS p,
+					RANK() OVER (PARTITION BY "scoreCohort" ORDER BY "scoreOrgFinal" DESC)::int AS k
+				FROM "OrganizationTable"
+				WHERE "organizationKey" = ANY(${keys}::text[])
+				  AND "deletedAt" IS NULL
+				  AND "scoreOrgFinal" IS NOT NULL
+				  AND "scoreCohort" IS NOT NULL
+			) r ON r."organizationKey" = o."organizationKey"
+		) ranked
+		WHERE ot."organizationKey" = ranked."organizationKey"
+		  AND (ot."scorePercentile" IS DISTINCT FROM ranked.p OR ot."scoreRank" IS DISTINCT FROM ranked.k)
+	`;
+	console.log(`✅ Ranked ${keys.length} served organizations`);
 }

@@ -23,7 +23,7 @@ async function seedProject(projectKey: string, records = true) {
 	await db.organizationTable.create({ data: { organizationKey: `o-${projectKey}`, organizationName: "Org" } });
 	await db.landTable.create({ data: { landKey: `${projectKey}-l1`, landName: "Plot", projectKey, hectares: 3 } });
 	await db.landTable.create({ data: { landKey: `${projectKey}-l2`, landName: "Gone", projectKey, deletedAt: new Date() } });
-	await db.polygonTable.create({ data: { polygonKey: `${projectKey}-g1`, landKey: `${projectKey}-l1`, geometry: {} } });
+	await db.polygonTable.create({ data: { polygonKey: `${projectKey}-g1`, landKey: `${projectKey}-l1`, geometry: { type: "Polygon", coordinates: [[[0, 0], [1, 0], [1, 1], [0, 0]]] } } });
 	await db.plantingTable.create({ data: { plantingKey: `${projectKey}-t1`, projectKey, parentKey: `${projectKey}-l1`, parentTable: "landTable", plantedQty: 40 } });
 	await db.cropTable.create({ data: { cropKey: `${projectKey}-c1`, cropName: "Rhizophora", projectKey } });
 	await db.miscTable.create({ data: { polyKey: `${projectKey}-m1`, projectKey, parentKey: projectKey, parentTable: "projectTable" } });
@@ -214,8 +214,8 @@ describe("scoreOneOrg: each org keeps what it averaged", () => {
 			{ organizationKey: "p-eden", projectKey: "c-2", viaOrganizationKeys: ["a-eden", "c-eden"], scoreProject: 0.75, scorePointsScored: 3, scorePointsAvailable: 4, plantedQty: 40, scoredAt: org.scoreLastUpdatedAt, scoreRunId: "run-1" },
 			{ organizationKey: "p-eden", projectKey: "c-3", viaOrganizationKeys: ["c-eden"], scoreProject: null, scorePointsScored: null, scorePointsAvailable: null, plantedQty: 2, scoredAt: org.scoreLastUpdatedAt, scoreRunId: "run-1" },
 		]);
-		// The stored numbers are the inputs' own: the mean of the scored, the planted sum of all.
-		expect(Number(org.scoreOrgPreClaim)).toBeCloseTo(0.625, 12);
+		// The stored numbers are the inputs' own: the mean of the scored weighted by points available, the planted sum of all.
+		expect(Number(org.scoreOrgPreClaim)).toBeCloseTo((0.5 * 10 + 0.75 * 4) / 14, 12);
 		expect(org.scoreSumPlantedQty).toBe(42);
 		expect(org.scorePointsScored).toBe(8);
 	});
@@ -237,10 +237,14 @@ describe("scoreOneOrg: each org keeps what it averaged", () => {
 		expect(await inputsOf("a-eden")).toEqual([]);
 	});
 
-	it("an org with no linked project writes none and scores 0", async () => {
+	it("an org with no linked project writes none and scores null, not 0", async () => {
 		await t.prisma.organizationTable.create({ data: { organizationKey: "a-lone", organizationName: "Lone" } });
 		await scoreOneOrg(t.prisma, "a-lone", "run-1");
 		expect(await inputsOf("a-lone")).toEqual([]);
-		expect(Number((await t.prisma.organizationTable.findUniqueOrThrow({ where: { organizationKey: "a-lone" } })).scoreOrgPreClaim)).toBe(0);
+		expect(await t.prisma.organizationTable.findUniqueOrThrow({ where: { organizationKey: "a-lone" }, select: { scoreOrgPreClaim: true, scoreOrgFinal: true, scoreCohort: true } })).toEqual({
+			scoreOrgPreClaim: null,
+			scoreOrgFinal: null,
+			scoreCohort: null,
+		});
 	});
 });

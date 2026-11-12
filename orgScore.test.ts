@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { NO_SCORE, orgWhere, propagateDirtyToParents, rankOrgs, scoreOneOrg } from "./orgScore";
+import { disclosure, NO_SCORE, orgWhere, propagateDirtyToParents, rankOrgs, scoreOneOrg, weightedMean } from "./orgScore";
 
 type Row = Record<string, unknown>;
 type Where = Record<string, unknown>;
@@ -37,22 +37,74 @@ describe("orgWhere", () => {
 });
 
 describe("rankOrgs", () => {
-	it("ranks live scored rows only, overall and then by category", async () => {
-		const sql: string[] = [];
+	it("ranks only the keys the site's own predicate serves, within each cohort, and clears every other row", async () => {
+		const asked: unknown[] = [];
+		const sql: { text: string; values: unknown[] }[] = [];
+		const served = { isParent: true };
 		const db = {
-			$executeRawUnsafe: async (s: string) => {
-				sql.push(s);
+			organizationTable: {
+				findMany: async (args: unknown) => {
+					asked.push(args);
+					return [{ organizationKey: "P" }, { organizationKey: "Q" }];
+				},
+			},
+			$executeRaw: async (strings: TemplateStringsArray, ...values: unknown[]) => {
+				sql.push({ text: strings.join("?"), values });
 				return 0;
 			},
 		} as never;
-		await rankOrgs(db);
+		await rankOrgs(db, served);
 
-		expect(sql).toHaveLength(2);
-		expect(sql[0]).toMatch(/SET "scoreRankOverall"/);
-		expect(sql[1]).toMatch(/PARTITION BY "primaryStakeholderCategory"/);
-		for (const s of sql) {
-			expect(s).toMatch(/WHERE[^)]*"scoreOrgFinal" IS NOT NULL[^)]*AND "deletedAt" IS NULL/s);
-		}
+		expect(asked).toEqual([{ where: served, select: { organizationKey: true } }]);
+		expect(sql).toHaveLength(1);
+		expect(sql[0].values).toEqual([["P", "Q"]]);
+		expect(sql[0].text).toMatch(/CUME_DIST\(\) OVER \(PARTITION BY "scoreCohort" ORDER BY "scoreOrgFinal"\)/);
+		expect(sql[0].text).toMatch(/RANK\(\) OVER \(PARTITION BY "scoreCohort" ORDER BY "scoreOrgFinal" DESC\)/);
+		expect(sql[0].text).toMatch(/LEFT JOIN/);
+	});
+});
+
+describe("weightedMean", () => {
+	it("weights each scored project by its points available; unscored and zero-point projects weigh nothing", () => {
+		expect(
+			weightedMean([
+				{ scoreProject: 1, scorePointsAvailable: 10 },
+				{ scoreProject: 0, scorePointsAvailable: 30 },
+				{ scoreProject: null, scorePointsAvailable: 99 },
+				{ scoreProject: 0.9, scorePointsAvailable: 0 },
+			]),
+		).toBe(0.25);
+	});
+
+	it("is null when nothing has points available: nothing scored is not 0", () => {
+		expect(weightedMean([])).toBeNull();
+		expect(weightedMean([{ scoreProject: 0, scorePointsAvailable: 0 }, { scoreProject: null, scorePointsAvailable: null }])).toBeNull();
+	});
+});
+
+describe("disclosure", () => {
+	const claim = (claimKey: string, claimQty: number | null) => ({ claimKey, claimQty });
+
+	it("no current claim: the unreviewed cohort, no ratio, nothing summed", () => {
+		expect(disclosure(500, [])).toEqual({ cohort: "unreviewed", ratio: null, sumClaimed: null, claimKeys: [] });
+	});
+
+	it("a claim with no tree count states nothing to divide by", () => {
+		expect(disclosure(500, [claim("h", null)])).toMatchObject({ cohort: "unreviewed", ratio: null });
+	});
+
+	it("planted over claimed, capped at 1", () => {
+		expect(disclosure(750, [claim("b", 400), claim("a", 600), claim("h", null)])).toEqual({
+			cohort: "reviewed",
+			ratio: 0.75,
+			sumClaimed: 1000,
+			claimKeys: ["a", "b"],
+		});
+		expect(disclosure(1_000_000, [claim("a", 10_000)]).ratio).toBe(1);
+	});
+
+	it("a claim of 0 trees hides nothing", () => {
+		expect(disclosure(0, [claim("a", 0)])).toMatchObject({ cohort: "reviewed", ratio: 1, sumClaimed: 0 });
 	});
 });
 
@@ -85,6 +137,7 @@ function stubDb(t: { orgs: Row[]; stakeholders: Row[]; projects: Row[]; claims: 
 	const sql: { text: string; values: unknown[] }[] = [];
 	const updates: { where: Where; data: Row }[] = [];
 	const inputs: { deleted: Where[]; created: Row[][] } = { deleted: [], created: [] };
+	const claimInputs: { deleted: Where[]; created: Row[][] } = { deleted: [], created: [] };
 	const order: string[] = [];
 	const live = (r: Row) => r.deletedAt == null;
 	const db = {
@@ -112,17 +165,27 @@ function stubDb(t: { orgs: Row[]; stakeholders: Row[]; projects: Row[]; claims: 
 				return row ?? {};
 			},
 		},
-		claimTable: {
-			aggregate: async ({ where }: { where: Where }) => ({
-				_sum: {
-					claimQty: t.claims.filter((c) => matches(c, where)).reduce((s, c) => s + (c.claimQty as number), 0) || null,
-				},
-			}),
+		scoreClaimInputTable: {
+			deleteMany: async ({ where }: { where: Where }) => {
+				claimInputs.deleted.push(where);
+				order.push("claims");
+				return { count: 0 };
+			},
+			createMany: async ({ data }: { data: Row[] }) => {
+				claimInputs.created.push(data);
+				order.push("claims");
+				return { count: data.length };
+			},
 		},
 		$queryRaw: async (strings: TemplateStringsArray, ...values: unknown[]) => {
 			const text = strings.join("?");
 			sql.push({ text, values });
 			const [ids] = values as [string[]];
+			// Supersession and recency are the SQL's; the golden suite runs it. Here: live and validated.
+			if (text.includes('FROM "ClaimTable"'))
+				return t.claims
+					.filter((c) => live(c) && c.validated && ids.includes(c.organizationKey as string))
+					.map(({ claimKey, claimQty }) => ({ claimKey, claimQty }));
 			if (text.includes('FROM "ProjectTable"')) {
 				const links = t.stakeholders.filter((s) => live(s) && ids.includes(s.organizationKey as string));
 				const keys = new Set(links.map((s) => s.projectKey));
@@ -153,7 +216,7 @@ function stubDb(t: { orgs: Row[]; stakeholders: Row[]; projects: Row[]; claims: 
 			throw new Error(`unexpected query: ${text}`);
 		},
 	};
-	return { db: db as never, sql, updates, inputs, order };
+	return { db: db as never, sql, updates, inputs, claimInputs, order };
 }
 
 // A parent over two live listings and one soft-deleted one, a lone org
@@ -177,15 +240,16 @@ const fixture = () => ({
 	],
 	projects: [
 		{ projectKey: "X", scoreProject: 0.75, scorePointsAvailable: 40, scorePointsScored: 30, deletedAt: null },
-		{ projectKey: "Y", scoreProject: 0.25, scorePointsAvailable: 40, scorePointsScored: 10, deletedAt: null },
+		{ projectKey: "Y", scoreProject: 0.25, scorePointsAvailable: 120, scorePointsScored: 30, deletedAt: null },
 		{ projectKey: "W", scoreProject: 1, scorePointsAvailable: 50, scorePointsScored: 50, deletedAt: null },
 		{ projectKey: "V", scoreProject: null, scorePointsAvailable: null, scorePointsScored: null, deletedAt: null },
 	],
 	claims: [
-		{ organizationKey: "A", claimQty: 600, deletedAt: null },
-		{ organizationKey: "B", claimQty: 400, deletedAt: null },
-		{ organizationKey: "B", claimQty: 5000, deletedAt: gone },
-		{ organizationKey: "D", claimQty: 999, deletedAt: null },
+		{ claimKey: "a1", organizationKey: "A", claimQty: 600, validated: true, deletedAt: null },
+		{ claimKey: "b1", organizationKey: "B", claimQty: 400, validated: true, deletedAt: null },
+		{ claimKey: "b2", organizationKey: "B", claimQty: 5000, validated: true, deletedAt: gone },
+		{ claimKey: "b3", organizationKey: "B", claimQty: 7000, validated: false, deletedAt: null },
+		{ claimKey: "d1", organizationKey: "D", claimQty: 999, validated: true, deletedAt: null },
 	],
 	plantings: [
 		{ projectKey: "X", plantedQty: 500, deletedAt: null },
@@ -201,19 +265,22 @@ describe("scoreOneOrg", () => {
 		await scoreOneOrg(db, "P", "run-1");
 
 		const subtree = ["P", "A", "B"];
-		expect(sql.map((q) => q.values)).toEqual([[subtree, subtree], [], [subtree]]);
-		for (const q of [sql[0], sql[2]]) expect(q.text).toMatch(/"deletedAt" IS NULL/);
+		expect(sql.map((q) => q.values)).toEqual([[subtree, subtree], [], [subtree], [subtree]]);
+		for (const q of [sql[0], sql[2], sql[3]]) expect(q.text).toMatch(/"deletedAt" IS NULL/);
+		expect(sql[2].text).toMatch(/"isValidated" IS TRUE/);
 		expect(updates).toEqual([
 			{
 				where: { organizationKey: "P" },
 				data: {
-					scoreOrgPreClaim: 0.5, // (0.75 + 0.25) / 2
-					scorePointsAvailable: 80,
-					scorePointsScored: 40,
-					scoreSumClaimed: 1000, // A 600 + B 400; D's 999 and B's deleted 5000 are not in the subtree
+					scoreOrgPreClaim: 0.375, // (0.75×40 + 0.25×120) / 160
+					scorePointsAvailable: 160,
+					scorePointsScored: 60,
+					scoreSumClaimed: 1000, // A 600 + B 400; D's 999 is not in the subtree, B's deleted 5000 and unvalidated 7000 don't count
 					scoreSumPlantedQty: 750, // X 500 + Y 250
 					scoreSumUndisclosed: 250,
-					scoreOrgFinal: 0.375, // 0.5 × 750/1000
+					scoreOrgFinal: 0.28125, // 0.375 × 750/1000
+					scoreRatioDisclosure: 0.75,
+					scoreCohort: "reviewed",
 					primaryStakeholderCategory: "developer", // A's two rows outvote B's one
 					scoreLastUpdatedAt: expect.any(Date),
 					scoreOrgFlag: false,
@@ -222,8 +289,8 @@ describe("scoreOneOrg", () => {
 		]);
 	});
 
-	it("keeps what it averaged: one input per linked project, replaced whole, stamped with the org's time", async () => {
-		const { db, updates, inputs, order } = stubDb(fixture());
+	it("keeps what it averaged and summed: one input per linked project, the claim keys under the run", async () => {
+		const { db, updates, inputs, claimInputs, order } = stubDb(fixture());
 		await scoreOneOrg(db, "P", "run-1");
 
 		const scoredAt = updates[0].data.scoreLastUpdatedAt;
@@ -231,11 +298,15 @@ describe("scoreOneOrg", () => {
 		expect(inputs.created).toEqual([
 			[
 				{ organizationKey: "P", projectKey: "X", viaOrganizationKeys: ["A"], scoreProject: 0.75, scorePointsScored: 30, scorePointsAvailable: 40, plantedQty: 500, scoredAt, scoreRunId: "run-1" },
-				{ organizationKey: "P", projectKey: "Y", viaOrganizationKeys: ["B"], scoreProject: 0.25, scorePointsScored: 10, scorePointsAvailable: 40, plantedQty: 250, scoredAt, scoreRunId: "run-1" },
+				{ organizationKey: "P", projectKey: "Y", viaOrganizationKeys: ["B"], scoreProject: 0.25, scorePointsScored: 30, scorePointsAvailable: 120, plantedQty: 250, scoredAt, scoreRunId: "run-1" },
 			],
 		]);
+		expect(claimInputs).toEqual({
+			deleted: [{ scoreRunId: "run-1", organizationKey: "P" }],
+			created: [[{ scoreRunId: "run-1", organizationKey: "P", claimKey: "a1" }, { scoreRunId: "run-1", organizationKey: "P", claimKey: "b1" }]],
+		});
 		// Written first: a failure before the org's update leaves it flagged to retry, never inputs it did not average.
-		expect(order).toEqual(["inputs", "inputs", "org"]);
+		expect(order).toEqual(["claims", "claims", "inputs", "inputs", "org"]);
 	});
 
 	it("scores a linked listing nowhere: columns nulled, inputs dropped, flag cleared, no query run", async () => {
@@ -252,19 +323,48 @@ describe("scoreOneOrg", () => {
 		]);
 	});
 
-	it("a lone org is its own subtree; an unscored project adds nothing; an unknown key writes nothing", async () => {
-		const { db, updates, inputs } = stubDb(fixture());
+	it("a lone org is its own subtree; nothing scored is null, unranked and asks for no claims; an unknown key writes nothing", async () => {
+		const { db, sql, updates, inputs, claimInputs } = stubDb(fixture());
 		await scoreOneOrg(db, "Z", "run-1");
 		expect(inputs.created[0]).toMatchObject([{ projectKey: "V", scoreProject: null, plantedQty: 0 }]);
 		expect(updates[0].data).toMatchObject({
-			scoreOrgPreClaim: 0,
+			scoreOrgPreClaim: null,
 			scorePointsAvailable: 0,
-			scoreSumClaimed: 0,
-			scoreOrgFinal: 0,
+			scoreSumClaimed: null,
+			scoreSumUndisclosed: null,
+			scoreOrgFinal: null,
+			scoreRatioDisclosure: null,
+			scoreCohort: null,
 			primaryStakeholderCategory: "nursery",
 		});
+		expect(sql.some((q) => q.text.includes('FROM "ClaimTable"'))).toBe(false);
+		expect(claimInputs.created).toEqual([]);
 
 		await scoreOneOrg(db, "nope", "run-1");
 		expect(updates).toHaveLength(1);
+	});
+
+	// RT-0025 lands with RT-0028: dropping unvalidated claims must not hand
+	// the org full disclosure among orgs whose claims were reviewed.
+	it("an org whose claims are all unvalidated is unreviewed with no ratio, never full disclosure", async () => {
+		const f = fixture();
+		for (const c of f.claims) c.validated = false;
+		const { db, updates } = stubDb(f);
+		await scoreOneOrg(db, "P", "run-1");
+		expect(updates[0].data).toMatchObject({
+			scoreOrgPreClaim: 0.375,
+			scoreOrgFinal: 0.375,
+			scoreRatioDisclosure: null,
+			scoreCohort: "unreviewed",
+			scoreSumClaimed: null,
+		});
+	});
+
+	it("an over-claim is capped: the ratio never passes 1", async () => {
+		const f = fixture();
+		f.claims = [{ claimKey: "a1", organizationKey: "A", claimQty: 10, validated: true, deletedAt: null }];
+		const { db, updates } = stubDb(f);
+		await scoreOneOrg(db, "P", "run-1");
+		expect(updates[0].data).toMatchObject({ scoreRatioDisclosure: 1, scoreOrgFinal: 0.375, scoreSumUndisclosed: -740 });
 	});
 });

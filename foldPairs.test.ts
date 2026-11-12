@@ -65,7 +65,8 @@ describe("scoreOneOrg folds the listings a person called one planting", () => {
 			["a-1", ["a-eden", "c-eden"], 0.625, 4, 7, 100],
 			["c-2", ["c-eden"], 1, 8, 8, 40],
 		]);
-		expect(await stored("p-eden")).toEqual({ mean: 0.8125, scored: 12, available: 15, planted: 140 });
+		// Weighted by points available: (0.625 × 7 + 1 × 8) / 15.
+		expect(await stored("p-eden")).toEqual({ mean: 0.825, scored: 12, available: 15, planted: 140 });
 	});
 
 	it("a part takes its whole's trees, the larger", async () => {
