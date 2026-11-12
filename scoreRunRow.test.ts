@@ -92,7 +92,7 @@ async function seedProject(projectKey: string) {
 	await db.projectTable.create({ data: { projectKey, projectName: `Project ${projectKey}`, scoreProjectFlag: true } });
 	await db.organizationTable.create({ data: { organizationKey: `o-${projectKey}`, organizationName: "Org", scoreOrgFlag: true } });
 	await db.landTable.create({ data: { landKey: `${projectKey}-l1`, landName: "Plot", projectKey, hectares: 3, latitude: 1.5, longitude: 2.5 } });
-	await db.polygonTable.create({ data: { polygonKey: `${projectKey}-g1`, landKey: `${projectKey}-l1`, geometry: {} } });
+	await db.polygonTable.create({ data: { polygonKey: `${projectKey}-g1`, landKey: `${projectKey}-l1`, geometry: { type: "Polygon", coordinates: [[[0, 0], [1, 0], [1, 1], [0, 0]]] } } });
 	await db.plantingTable.create({ data: { plantingKey: `${projectKey}-t1`, projectKey, parentKey: `${projectKey}-l1`, parentTable: "landTable", plantedQty: 40 } });
 	await db.cropTable.create({ data: { cropKey: `${projectKey}-c1`, cropName: "Rhizophora", projectKey } });
 	await db.stakeholderTable.create({
