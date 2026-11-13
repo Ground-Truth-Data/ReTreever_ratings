@@ -1,4 +1,5 @@
 import type { PrismaClient } from "$parent/prisma/generated/prisma-postgres/client.js";
+import { ALL_GROUP, MIN_CATEGORY_GROUP } from "./orgScore.js";
 
 export type SnapshotDb = Pick<PrismaClient, "$transaction" | "$executeRaw" | "$executeRawUnsafe" | "scoreSnapshotTable">;
 
@@ -34,8 +35,10 @@ const breakdownOf = (lines: string) => `
  * the points-weighted mean of the scored projects it averaged. Unscored rows
  * reconcile: they show no breakdown. A project's percentile is the PERCENT_RANK
  * rank_projects stored; its rank, 1 = best, is counted here. An org's
- * percentile and rank are rankOrgs', within its cohort and the category frozen
- * beside them. Returns the keys that did not reconcile.
+ * percentile and rank are rankOrgs', within its cohort and the group frozen
+ * beside them as `category`: its category, or `all` when that group was under
+ * the minimum and it ranked among the whole cohort. Returns the keys that did
+ * not reconcile.
  */
 export async function snapshotRun(db: SnapshotDb, scoreRunId: string): Promise<string[]> {
 	await db.$transaction([
@@ -56,7 +59,8 @@ export async function snapshotRun(db: SnapshotDb, scoreRunId: string): Promise<s
 			`INSERT INTO "ScoreSnapshotTable"
 				("scoreRunId", "entityTable", "entityKey", "score", "percentile", "rank", "cohort", "category", "ratioDisclosure", "pointsScored", "pointsAvailable",
 				 "preClaim", "projectsScored", "sumClaimed", "sumPlantedQty", "sumUndisclosed", "breakdown", "reconciled")
-			SELECT $1, 'org', o."organizationKey", o."scoreOrgFinal", o."scorePercentile", o."scoreRank", o."scoreCohort", o."primaryStakeholderCategory", o."scoreRatioDisclosure",
+			SELECT $1, 'org', o."organizationKey", o."scoreOrgFinal", o."scorePercentile", o."scoreRank", o."scoreCohort",
+				CASE WHEN g.n < $2::int THEN $3::text ELSE o."primaryStakeholderCategory" END, o."scoreRatioDisclosure",
 				o."scorePointsScored", o."scorePointsAvailable", o."scoreOrgPreClaim", COALESCE(n.scored, 0),
 				o."scoreSumClaimed", o."scoreSumPlantedQty", o."scoreSumUndisclosed",
 				b.breakdown,
@@ -71,8 +75,15 @@ export async function snapshotRun(db: SnapshotDb, scoreRunId: string): Promise<s
 					SUM("scoreProject" * "scorePointsAvailable") / NULLIF(SUM("scorePointsAvailable") FILTER (WHERE "scorePointsAvailable" > 0), 0) AS mean
 				FROM "OrgScoreInputTable" WHERE "scoreProject" IS NOT NULL GROUP BY 1
 			) n ON n."organizationKey" = o."organizationKey"
+			-- The group rankOrgs ranked it within: its category, or the whole cohort when that group is small.
+			LEFT JOIN (
+				SELECT "organizationKey", COUNT(*) OVER (PARTITION BY "scoreCohort", COALESCE("primaryStakeholderCategory", '')) AS n
+				FROM "OrganizationTable" WHERE "deletedAt" IS NULL AND "scoreRank" IS NOT NULL
+			) g ON g."organizationKey" = o."organizationKey"
 			WHERE o."deletedAt" IS NULL`,
 			scoreRunId,
+			MIN_CATEGORY_GROUP,
+			ALL_GROUP,
 		),
 		db.$executeRaw`
 			UPDATE "ScoreRunTable"

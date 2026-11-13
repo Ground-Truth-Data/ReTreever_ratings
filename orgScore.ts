@@ -368,16 +368,28 @@ export async function scoreOneOrg(db: OrgScoreDb, organizationKey: string, score
 	});
 }
 
+/** A category with fewer ranked orgs than this in a cohort ranks them among the whole cohort instead. */
+export const MIN_CATEGORY_GROUP: number = config.minCategoryGroup;
+
+/** The group a fallback org was ranked within, as the snapshot's `category` names it. */
+export const ALL_GROUP = "all";
+
 /**
  * The published rating: each served org with a final score is placed among
  * the served orgs of its own cohort and primary stakeholder category — the
  * share of them scoring at or below it (CUME_DIST, so tied orgs share one
  * percentile and the top org is 1) and its competition rank, 1 the best. An
- * org with no category ranks among the others with none. Every other row,
- * soft-deleted, unserved or null, holds neither. `served` is the site's own
- * predicate, passed in so it is never restated here.
+ * org with no category ranks among the others with none. A group of fewer
+ * than `minGroup` ranks among every ranked org of its cohort instead, so no
+ * org is "1st of 1". Every other row, soft-deleted, unserved or null, holds
+ * neither. `served` is the site's own predicate, passed in so it is never
+ * restated here.
  */
-export async function rankOrgs(db: Pick<PrismaClient, "organizationTable" | "$executeRaw">, served: Prisma.OrganizationTableWhereInput): Promise<void> {
+export async function rankOrgs(
+	db: Pick<PrismaClient, "organizationTable" | "$executeRaw">,
+	served: Prisma.OrganizationTableWhereInput,
+	minGroup: number = MIN_CATEGORY_GROUP,
+): Promise<void> {
 	console.log("\n📊 Ranking organizations...");
 	const keys = (await db.organizationTable.findMany({ where: served, select: { organizationKey: true } })).map(
 		(o) => o.organizationKey,
@@ -390,13 +402,21 @@ export async function rankOrgs(db: Pick<PrismaClient, "organizationTable" | "$ex
 			FROM "OrganizationTable" o
 			LEFT JOIN (
 				SELECT "organizationKey",
-					CUME_DIST() OVER (PARTITION BY "scoreCohort", COALESCE("primaryStakeholderCategory", '') ORDER BY "scoreOrgFinal") AS p,
-					RANK() OVER (PARTITION BY "scoreCohort", COALESCE("primaryStakeholderCategory", '') ORDER BY "scoreOrgFinal" DESC)::int AS k
-				FROM "OrganizationTable"
-				WHERE "organizationKey" = ANY(${keys}::text[])
-				  AND "deletedAt" IS NULL
-				  AND "scoreOrgFinal" IS NOT NULL
-				  AND "scoreCohort" IS NOT NULL
+					CASE WHEN n < ${minGroup} THEN p_all ELSE p_cat END AS p,
+					CASE WHEN n < ${minGroup} THEN k_all ELSE k_cat END AS k
+				FROM (
+					SELECT "organizationKey",
+						COUNT(*) OVER (PARTITION BY "scoreCohort", COALESCE("primaryStakeholderCategory", '')) AS n,
+						CUME_DIST() OVER (PARTITION BY "scoreCohort", COALESCE("primaryStakeholderCategory", '') ORDER BY "scoreOrgFinal") AS p_cat,
+						RANK() OVER (PARTITION BY "scoreCohort", COALESCE("primaryStakeholderCategory", '') ORDER BY "scoreOrgFinal" DESC)::int AS k_cat,
+						CUME_DIST() OVER (PARTITION BY "scoreCohort" ORDER BY "scoreOrgFinal") AS p_all,
+						RANK() OVER (PARTITION BY "scoreCohort" ORDER BY "scoreOrgFinal" DESC)::int AS k_all
+					FROM "OrganizationTable"
+					WHERE "organizationKey" = ANY(${keys}::text[])
+					  AND "deletedAt" IS NULL
+					  AND "scoreOrgFinal" IS NOT NULL
+					  AND "scoreCohort" IS NOT NULL
+				) w
 			) r ON r."organizationKey" = o."organizationKey"
 		) ranked
 		WHERE ot."organizationKey" = ranked."organizationKey"

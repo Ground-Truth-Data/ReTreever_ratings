@@ -45,7 +45,7 @@ describe("orgWhere", () => {
 });
 
 describe("rankOrgs", () => {
-	it("ranks only the keys the site's own predicate serves, within each cohort and category, and clears every other row", async () => {
+	it("ranks only the keys the site's own predicate serves, within each cohort and category (a small category within the whole cohort), and clears every other row", async () => {
 		const asked: unknown[] = [];
 		const sql: { text: string; values: unknown[] }[] = [];
 		const served = { isParent: true };
@@ -65,9 +65,12 @@ describe("rankOrgs", () => {
 
 		expect(asked).toEqual([{ where: served, select: { organizationKey: true } }]);
 		expect(sql).toHaveLength(1);
-		expect(sql[0].values).toEqual([["P", "Q"]]);
+		// The minimum, twice (percentile and rank), then the served keys.
+		expect(sql[0].values).toEqual([5, 5, ["P", "Q"]]);
 		expect(sql[0].text).toMatch(/CUME_DIST\(\) OVER \(PARTITION BY "scoreCohort", COALESCE\("primaryStakeholderCategory", ''\) ORDER BY "scoreOrgFinal"\)/);
 		expect(sql[0].text).toMatch(/RANK\(\) OVER \(PARTITION BY "scoreCohort", COALESCE\("primaryStakeholderCategory", ''\) ORDER BY "scoreOrgFinal" DESC\)/);
+		expect(sql[0].text).toMatch(/CUME_DIST\(\) OVER \(PARTITION BY "scoreCohort" ORDER BY "scoreOrgFinal"\)/);
+		expect(sql[0].text).toMatch(/CASE WHEN n < \? THEN p_all ELSE p_cat END/);
 		expect(sql[0].text).toMatch(/LEFT JOIN/);
 	});
 });

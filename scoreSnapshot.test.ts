@@ -4,7 +4,7 @@ import { GOLDEN_ORGS, runGolden, seedGolden } from "./golden.fixture";
 import { openScoreRun, useScoreDb } from "./scoreDb";
 import { matrixPoints } from "./scoreMatrix";
 import { servedOrgWhere } from "$parent/src/lib/core/servedOrgs";
-import { clearUnserved, NO_SCORE, rankOrgs } from "./orgScore";
+import { ALL_GROUP, clearUnserved, MIN_CATEGORY_GROUP, NO_SCORE, rankOrgs } from "./orgScore";
 import { rankOnlyOrgs, scoreAndRankOrgs } from "./score_orgs";
 import { rank_projects, score_projects } from "./score_projects";
 import { snapshotRun } from "./scoreSnapshot";
@@ -132,19 +132,26 @@ describe("a full run's snapshot", () => {
 	});
 });
 
-/** Served orgs already scored, as a scoring run leaves them: four developers, two producers, one with no category, one reviewed developer. */
+/**
+ * Served orgs already scored, as a scoring run leaves them. Unreviewed: five developers (a group at the minimum),
+ * four producers and one with no category (both under it); reviewed: one developer, alone in its cohort.
+ * Unreviewed by score, all ten: p-1 .95, d-1 .9, d-2 .8, p-2 .7, n-1 .6, d-3 .5, d-4 .5, p-3 .3, p-4 .2, d-5 .1.
+ */
 async function seedScored() {
 	const org = (organizationKey: string, scoreOrgFinal: number, primaryStakeholderCategory: string | null, scoreCohort = "unreviewed") =>
 		({ organizationKey, organizationName: organizationKey, isParent: true, scoreOrgFinal, scorePointsScored: 0, scoreCohort, primaryStakeholderCategory, scoreOrgFlag: false });
 	await t.prisma.organizationTable.createMany({
 		data: [
 			org("d-1", 0.9, "developer_ish"),
-			org("d-2", 0.5, "developer_ish"),
+			org("d-2", 0.8, "developer_ish"),
 			org("d-3", 0.5, "developer_ish"),
-			org("d-4", 0.1, "developer_ish"),
-			org("p-1", 0.2, "producer_ish"),
-			org("p-2", 0.8, "producer_ish"),
-			org("n-1", 0.3, null),
+			org("d-4", 0.5, "developer_ish"),
+			org("d-5", 0.1, "developer_ish"),
+			org("p-1", 0.95, "producer_ish"),
+			org("p-2", 0.7, "producer_ish"),
+			org("p-3", 0.3, "producer_ish"),
+			org("p-4", 0.2, "producer_ish"),
+			org("n-1", 0.6, null),
 			org("r-1", 0.05, "developer_ish", "reviewed"),
 			{ organizationKey: "c-1", organizationName: "c-1", isParent: false, organizationParentKey: "d-1", scoreOrgFlag: false },
 		],
@@ -159,24 +166,37 @@ const ranksOf = async () =>
 		]),
 	);
 
-describe("an org is ranked among its own cohort and category", () => {
-	it("ranks and places each served org within its cohort and primary category; one with no category ranks among the others with none", async () => {
+describe("an org is ranked among its own cohort and category, or the whole cohort when its category is small", () => {
+	it("a group of five ranks within itself; a group of four and a group of one rank among all ten of the cohort", async () => {
 		await seedScored();
 		await rankOrgs(t.prisma, servedOrgWhere());
+		expect(MIN_CATEGORY_GROUP).toBe(5);
 		expect(await ranksOf()).toEqual({
+			// Five developers: among themselves.
 			"d-1": [1, 1],
-			"d-2": [2, 0.75],
-			"d-3": [2, 0.75],
-			"d-4": [4, 0.25],
-			"p-2": [1, 1],
-			"p-1": [2, 0.5],
-			"n-1": [1, 1],
-			// Alone in its cohort: the unreviewed developers above it never outrank it.
+			"d-2": [2, 0.8],
+			"d-3": [3, 0.6],
+			"d-4": [3, 0.6],
+			"d-5": [5, 0.2],
+			// Four producers and one with no category: their places among all ten, the same as their overall ones.
+			"p-1": [1, 1],
+			"p-2": [4, 0.7],
+			"p-3": [8, 0.3],
+			"p-4": [9, 0.2],
+			"n-1": [5, 0.6],
+			// Alone in the reviewed cohort, which is all it falls back to: the unreviewed never outrank it.
 			"r-1": [1, 1],
 		});
 	});
 
-	it("--rank-only re-ranks and freezes today's scores as a completed run, each org's category beside its rank, scoring nothing", async () => {
+	it("with the minimum at 1 every group ranks within itself, as RT 119 did", async () => {
+		await seedScored();
+		await rankOrgs(t.prisma, servedOrgWhere(), 1);
+		const r = await ranksOf();
+		expect([r["p-1"], r["p-2"], r["n-1"], r["d-2"]]).toEqual([[1, 1], [2, 0.75], [1, 1], [2, 0.8]]);
+	});
+
+	it("--rank-only re-ranks and freezes today's scores as a completed run, each org's group beside its rank (\"all\" for a fallback), scoring nothing", async () => {
 		await seedScored();
 		const before = await t.prisma.organizationTable.findMany({ select: { organizationKey: true, scoreOrgFinal: true, scoreLastUpdatedAt: true }, orderBy: { organizationKey: "asc" } });
 		const runId = await rankOnlyOrgs();
@@ -192,12 +212,15 @@ describe("an org is ranked among its own cohort and category", () => {
 			{ entityKey: "c-1", rank: null, category: null, cohort: null },
 			{ entityKey: "d-1", rank: 1, category: "developer_ish", cohort: "unreviewed" },
 			{ entityKey: "d-2", rank: 2, category: "developer_ish", cohort: "unreviewed" },
-			{ entityKey: "d-3", rank: 2, category: "developer_ish", cohort: "unreviewed" },
-			{ entityKey: "d-4", rank: 4, category: "developer_ish", cohort: "unreviewed" },
-			{ entityKey: "n-1", rank: 1, category: null, cohort: "unreviewed" },
-			{ entityKey: "p-1", rank: 2, category: "producer_ish", cohort: "unreviewed" },
-			{ entityKey: "p-2", rank: 1, category: "producer_ish", cohort: "unreviewed" },
-			{ entityKey: "r-1", rank: 1, category: "developer_ish", cohort: "reviewed" },
+			{ entityKey: "d-3", rank: 3, category: "developer_ish", cohort: "unreviewed" },
+			{ entityKey: "d-4", rank: 3, category: "developer_ish", cohort: "unreviewed" },
+			{ entityKey: "d-5", rank: 5, category: "developer_ish", cohort: "unreviewed" },
+			{ entityKey: "n-1", rank: 5, category: ALL_GROUP, cohort: "unreviewed" },
+			{ entityKey: "p-1", rank: 1, category: ALL_GROUP, cohort: "unreviewed" },
+			{ entityKey: "p-2", rank: 4, category: ALL_GROUP, cohort: "unreviewed" },
+			{ entityKey: "p-3", rank: 8, category: ALL_GROUP, cohort: "unreviewed" },
+			{ entityKey: "p-4", rank: 9, category: ALL_GROUP, cohort: "unreviewed" },
+			{ entityKey: "r-1", rank: 1, category: ALL_GROUP, cohort: "reviewed" },
 		]);
 	});
 
@@ -216,8 +239,8 @@ describe("an org is ranked among its own cohort and category", () => {
 		await seed();
 		const runId = await fullRun();
 		expect(await t.prisma.scoreSnapshotTable.findMany({ where: { scoreRunId: runId, entityTable: "project" }, select: { category: true } })).toEqual([{ category: null }, { category: null }, { category: null }]);
-		// o-1's projects name it developer: its row freezes that beside its rank among developers.
-		expect(await t.prisma.scoreSnapshotTable.findUniqueOrThrow({ where: { scoreRunId_entityTable_entityKey: { scoreRunId: runId, entityTable: "org", entityKey: "o-1" } }, select: { category: true, rank: true } })).toEqual({ category: "developer_ish", rank: 1 });
+		// o-1's projects name it developer, but it is the only ranked org: it ranks among the whole cohort, frozen as "all".
+		expect(await t.prisma.scoreSnapshotTable.findUniqueOrThrow({ where: { scoreRunId_entityTable_entityKey: { scoreRunId: runId, entityTable: "org", entityKey: "o-1" } }, select: { category: true, rank: true } })).toEqual({ category: ALL_GROUP, rank: 1 });
 	});
 });
 
