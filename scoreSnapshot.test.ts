@@ -3,7 +3,9 @@ import { pgliteDb, type TestDb } from "$parent/tests/pglite/pgliteDb";
 import { GOLDEN_ORGS, runGolden, seedGolden } from "./golden.fixture";
 import { openScoreRun, useScoreDb } from "./scoreDb";
 import { matrixPoints } from "./scoreMatrix";
-import { scoreAndRankOrgs } from "./score_orgs";
+import { servedOrgWhere } from "$parent/src/lib/core/servedOrgs";
+import { rankOrgs } from "./orgScore";
+import { rankOnlyOrgs, scoreAndRankOrgs } from "./score_orgs";
 import { rank_projects, score_projects } from "./score_projects";
 import { snapshotRun } from "./scoreSnapshot";
 
@@ -127,5 +129,94 @@ describe("a full run's snapshot", () => {
 		const first = await snapshotOf("golden-1");
 		expect(first.filter((r) => r.entityTable === "org").map((r) => r.entityKey)).toEqual(GOLDEN_ORGS.map((o) => `g-${o}`).sort());
 		expect(JSON.stringify(await snapshotOf("golden-2"))).toBe(JSON.stringify(first));
+	});
+});
+
+/** Served orgs already scored, as a scoring run leaves them: four developers, two producers, one with no category, one reviewed developer. */
+async function seedScored() {
+	const org = (organizationKey: string, scoreOrgFinal: number, primaryStakeholderCategory: string | null, scoreCohort = "unreviewed") =>
+		({ organizationKey, organizationName: organizationKey, isParent: true, scoreOrgFinal, scorePointsScored: 0, scoreCohort, primaryStakeholderCategory, scoreOrgFlag: false });
+	await t.prisma.organizationTable.createMany({
+		data: [
+			org("d-1", 0.9, "developer_ish"),
+			org("d-2", 0.5, "developer_ish"),
+			org("d-3", 0.5, "developer_ish"),
+			org("d-4", 0.1, "developer_ish"),
+			org("p-1", 0.2, "producer_ish"),
+			org("p-2", 0.8, "producer_ish"),
+			org("n-1", 0.3, null),
+			org("r-1", 0.05, "developer_ish", "reviewed"),
+			{ organizationKey: "c-1", organizationName: "c-1", isParent: false, organizationParentKey: "d-1", scoreOrgFlag: false },
+		],
+	});
+}
+
+const ranksOf = async () =>
+	Object.fromEntries(
+		(await t.prisma.organizationTable.findMany({ where: { scoreOrgFinal: { not: null } }, select: { organizationKey: true, scoreRank: true, scorePercentile: true } })).map((o) => [
+			o.organizationKey,
+			[o.scoreRank, Number(o.scorePercentile)],
+		]),
+	);
+
+describe("an org is ranked among its own cohort and category", () => {
+	it("ranks and places each served org within its cohort and primary category; one with no category ranks among the others with none", async () => {
+		await seedScored();
+		await rankOrgs(t.prisma, servedOrgWhere());
+		expect(await ranksOf()).toEqual({
+			"d-1": [1, 1],
+			"d-2": [2, 0.75],
+			"d-3": [2, 0.75],
+			"d-4": [4, 0.25],
+			"p-2": [1, 1],
+			"p-1": [2, 0.5],
+			"n-1": [1, 1],
+			// Alone in its cohort: the unreviewed developers above it never outrank it.
+			"r-1": [1, 1],
+		});
+	});
+
+	it("--rank-only re-ranks and freezes today's scores as a completed run, each org's category beside its rank, scoring nothing", async () => {
+		await seedScored();
+		const before = await t.prisma.organizationTable.findMany({ select: { organizationKey: true, scoreOrgFinal: true, scoreLastUpdatedAt: true }, orderBy: { organizationKey: "asc" } });
+		const runId = await rankOnlyOrgs();
+
+		const run = await t.prisma.scoreRunTable.findUniqueOrThrow({ where: { scoreRunId: runId } });
+		expect(run.completedAt).not.toBeNull();
+		expect(run.reconciled).toBe(true);
+		expect(await t.prisma.organizationTable.findMany({ select: { organizationKey: true, scoreOrgFinal: true, scoreLastUpdatedAt: true }, orderBy: { organizationKey: "asc" } })).toEqual(before);
+		expect(await t.prisma.orgScoreInputTable.count()).toBe(0);
+
+		const frozen = await t.prisma.scoreSnapshotTable.findMany({ where: { scoreRunId: runId, entityTable: "org" }, select: { entityKey: true, rank: true, category: true, cohort: true }, orderBy: { entityKey: "asc" } });
+		expect(frozen).toEqual([
+			{ entityKey: "c-1", rank: null, category: null, cohort: null },
+			{ entityKey: "d-1", rank: 1, category: "developer_ish", cohort: "unreviewed" },
+			{ entityKey: "d-2", rank: 2, category: "developer_ish", cohort: "unreviewed" },
+			{ entityKey: "d-3", rank: 2, category: "developer_ish", cohort: "unreviewed" },
+			{ entityKey: "d-4", rank: 4, category: "developer_ish", cohort: "unreviewed" },
+			{ entityKey: "n-1", rank: 1, category: null, cohort: "unreviewed" },
+			{ entityKey: "p-1", rank: 2, category: "producer_ish", cohort: "unreviewed" },
+			{ entityKey: "p-2", rank: 1, category: "producer_ish", cohort: "unreviewed" },
+			{ entityKey: "r-1", rank: 1, category: "developer_ish", cohort: "reviewed" },
+		]);
+	});
+
+	it("--rank-only refuses while a served org is dirty, or a child dirties one, and opens no run", async () => {
+		await seedScored();
+		await t.prisma.organizationTable.update({ where: { organizationKey: "p-1" }, data: { scoreOrgFlag: true } });
+		await expect(rankOnlyOrgs()).rejects.toThrow(/--rank-only refused: 1 served organization/);
+
+		await t.prisma.organizationTable.update({ where: { organizationKey: "p-1" }, data: { scoreOrgFlag: false } });
+		await t.prisma.organizationTable.update({ where: { organizationKey: "c-1" }, data: { scoreOrgFlag: true } });
+		await expect(rankOnlyOrgs()).rejects.toThrow(/--rank-only refused: 1 served organization/);
+		expect(await t.prisma.scoreRunTable.count()).toBe(0);
+	});
+
+	it("a project's snapshot row carries no category", async () => {
+		await seed();
+		const runId = await fullRun();
+		expect(await t.prisma.scoreSnapshotTable.findMany({ where: { scoreRunId: runId, entityTable: "project" }, select: { category: true } })).toEqual([{ category: null }, { category: null }, { category: null }]);
+		// o-1's projects name it developer: its row freezes that, unranked because /who does not serve it.
+		expect(await t.prisma.scoreSnapshotTable.findUniqueOrThrow({ where: { scoreRunId_entityTable_entityKey: { scoreRunId: runId, entityTable: "org", entityKey: "o-1" } }, select: { category: true, rank: true } })).toEqual({ category: "developer_ish", rank: null });
 	});
 });

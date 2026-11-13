@@ -127,22 +127,52 @@ export async function scoreAndRankOrgs(
 	return failed;
 }
 
+/** A run that scores nothing: today's scores re-ranked and frozen as a run of
+ * their own, in minutes where a full org run takes hours. Refuses while a
+ * served org is dirty, so it never freezes a score its inputs have moved past;
+ * a dirty child dirties its parent first, as a scoring run would. Returns the
+ * run's id. */
+export async function rankOnlyOrgs(): Promise<string> {
+	const prisma = scoreDb();
+	await propagateDirtyToParents(prisma);
+	const dirty = await prisma.organizationTable.count({ where: { AND: [servedOrgWhere(), { scoreOrgFlag: true }] } });
+	if (dirty > 0) {
+		throw new Error(`--rank-only refused: ${dirty} served organization(s) are flagged dirty. Score them first: gitEr/CLI.sh score orgs`);
+	}
+	const scoreRunId = await openScoreRun(prisma);
+	await rankOrgs(prisma, servedOrgWhere());
+	const drifted = await snapshotRun(prisma, scoreRunId);
+	console.log(`\n📸 Rank-only run ${scoreRunId} written${drifted.length ? `; ${drifted.length} rows do not reconcile:\n  ${drifted.join("\n  ")}` : ", every row reconciles"}`);
+	return scoreRunId;
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
 	const rawArgs = process.argv.slice(2);
 	// --full ignores scoreOrgFlag and rescores every organization.
 	const full = rawArgs.includes("--full");
-	const args = rawArgs.filter((a) => a !== "--full");
+	const rankOnly = rawArgs.includes("--rank-only");
+	if (full && rankOnly) {
+		console.error("--full and --rank-only contradict: one rescores everything, the other scores nothing.");
+		process.exit(1);
+	}
+	const args = rawArgs.filter((a) => a !== "--full" && a !== "--rank-only");
 	const batchSize = args[0]
 		? Number.parseInt(args[0], 10)
 		: config.batch.organizations.defaultSize;
 	const testOrgIds = args.slice(1);
 
-	const lock = await takeRunLock(`score_orgs${full ? " --full" : ""}`).catch((e: Error) => {
+	const lock = await takeRunLock(`score_orgs${full ? " --full" : rankOnly ? " --rank-only" : ""}`).catch((e: Error) => {
 		console.error(e.message);
 		process.exit(1);
 	});
+	let code = 0;
 	try {
-		if (testOrgIds.length > 0) {
+		if (rankOnly) {
+			await rankOnlyOrgs().catch((e: Error) => {
+				console.error(`❌ ${e.message}`);
+				code = 1;
+			});
+		} else if (testOrgIds.length > 0) {
 			const prisma = scoreDb();
 			await propagateDirtyToParents(prisma);
 			const failed = await score_orgs(testOrgIds, batchSize, full);
@@ -159,5 +189,5 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 		await lock.release();
 		await closeScoreDb();
 	}
-	process.exit(0);
+	process.exit(code);
 }

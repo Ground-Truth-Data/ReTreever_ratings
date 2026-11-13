@@ -33,8 +33,9 @@ const breakdownOf = (lines: string) => `
  * breakdown sums to its stored points and, for an org, its pre-claim score is
  * the points-weighted mean of the scored projects it averaged. Unscored rows
  * reconcile: they show no breakdown. A project's percentile is the PERCENT_RANK
- * rank_projects stored; its rank, 1 = best, is counted here. Returns the keys
- * that did not reconcile.
+ * rank_projects stored; its rank, 1 = best, is counted here. An org's
+ * percentile and rank are rankOrgs', within its cohort and the category frozen
+ * beside them. Returns the keys that did not reconcile.
  */
 export async function snapshotRun(db: SnapshotDb, scoreRunId: string): Promise<string[]> {
 	await db.$transaction([
@@ -53,9 +54,9 @@ export async function snapshotRun(db: SnapshotDb, scoreRunId: string): Promise<s
 		),
 		db.$executeRawUnsafe(
 			`INSERT INTO "ScoreSnapshotTable"
-				("scoreRunId", "entityTable", "entityKey", "score", "percentile", "rank", "cohort", "ratioDisclosure", "pointsScored", "pointsAvailable",
+				("scoreRunId", "entityTable", "entityKey", "score", "percentile", "rank", "cohort", "category", "ratioDisclosure", "pointsScored", "pointsAvailable",
 				 "preClaim", "projectsScored", "sumClaimed", "sumPlantedQty", "sumUndisclosed", "breakdown", "reconciled")
-			SELECT $1, 'org', o."organizationKey", o."scoreOrgFinal", o."scorePercentile", o."scoreRank", o."scoreCohort", o."scoreRatioDisclosure",
+			SELECT $1, 'org', o."organizationKey", o."scoreOrgFinal", o."scorePercentile", o."scoreRank", o."scoreCohort", o."primaryStakeholderCategory", o."scoreRatioDisclosure",
 				o."scorePointsScored", o."scorePointsAvailable", o."scoreOrgPreClaim", COALESCE(n.scored, 0),
 				o."scoreSumClaimed", o."scoreSumPlantedQty", o."scoreSumUndisclosed",
 				b.breakdown,
