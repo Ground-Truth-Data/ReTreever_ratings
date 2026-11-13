@@ -20,7 +20,8 @@ beforeEach(async () => {
 
 // Every project offers 82 points under today's schema and weights (the
 // co-funded one 84: two stakeholder rows); the comments say what each org
-// lost or kept. The reviewed cohort is four, so its percentiles are quarters.
+// lost or kept. Each org ranks among its cohort's orgs of its own category: the
+// reviewed developers are four, so their percentiles are quarters.
 const GOLDEN: Record<GoldenOrg, GoldenOutcome> = {
 	// 43/82, no claim: its own cohort, the pre-claim score, tied with unvalidated.
 	noClaim: { final: 0.52439, ratio: null, cohort: "unreviewed", percentile: 1, rank: 1, claimKeys: [] },
@@ -35,8 +36,9 @@ const GOLDEN: Record<GoldenOrg, GoldenOutcome> = {
 	// No project: null, unranked, no cohort.
 	nothing: { final: null, ratio: null, cohort: null, percentile: null, rank: null, claimKeys: [] },
 	// Funds the co-funded project and claims 6000 of its trees, owns none of
-	// them: no ratio, its claim summed nowhere, its mean 35/84 kept whole.
-	sponsor: { final: 0.416667, ratio: null, cohort: "unreviewed", percentile: 0.333333, rank: 3, claimKeys: [] },
+	// them: no ratio, its claim summed nowhere, its mean 35/84 kept whole. The
+	// only sponsor, so first among sponsors whatever the developers score.
+	sponsor: { final: 0.416667, ratio: null, cohort: "unreviewed", percentile: 1, rank: 1, claimKeys: [] },
 	// Develops it, so owns its 600 trees: 35/84 × 600/1500.
 	developer: { final: 0.166667, ratio: 0.4, cohort: "reviewed", percentile: 0.25, rank: 4, claimKeys: ["developer-1"] },
 };

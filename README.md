@@ -13,14 +13,20 @@ the record's score falls among comparable records of the published score run.
 Records with the same score share one percentile. Before a run is published, a
 page shows no rating.
 
-- **An organization's** is `CUME_DIST()`: the share of its cohort (below)
-  scoring at or below it. A rating of 90 means 90% of its cohort score the same
-  or lower; the top organization of a cohort is 100.
+- **An organization's** is `CUME_DIST()`: the share of its peer group (below)
+  scoring at or below it. A rating of 90 means 90% of its peers score the same
+  or lower; the top organization of a group is 100. Beside it the run freezes
+  its competition rank in the group, 1 the best, and the page says "3rd of 46"
+  from the group's size in that run.
 - **A project's** is `PERCENT_RANK()`, rounded to a whole number: the share of
   all scored projects scoring strictly below it. The lowest project is 0 and the
   top is 100.
 
-**Organizations are compared within a cohort:**
+**Organizations are compared within their primary stakeholder category**
+(developers against developers, producers against producers), the role they
+hold on most of their projects (`primaryStakeholderCategory`, Tier 8). One with
+no category is compared with the others that have none. **Within each category,
+within a cohort:**
 
 - **Reviewed claims.** An organization with at least one current claim of a
   tree count, on a source validated against its latest capture, is ranked
@@ -142,9 +148,9 @@ The cuts live in one place, `ReTreever_who_what/lib/rating/ratingState.ts`
 - **Claim review.** "Reviewed" means only that a claim is current and its
   source is validated. No one has judged whether the claim is reforestation,
   conservation or something else, and no state of such a review is read.
-- **Peer groups.** Organizations are not compared within their stakeholder
-  category (nurseries against nurseries); the only split is the two cohorts
-  above.
+- **Peer groups.** An organization's category is the role it holds on most of
+  its projects, not a judgement of what it is: one that plants on some projects
+  and funds others is compared as whichever it does more.
 
 ## Why it runs only inside ReTreever's workspace
 

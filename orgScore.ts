@@ -338,11 +338,13 @@ export async function scoreOneOrg(db: OrgScoreDb, organizationKey: string, score
 }
 
 /**
- * The published rating: each served org with a final score gets the share
- * of its cohort scoring at or below it (CUME_DIST, so tied orgs share one
- * percentile and the top org is 1) and its competition rank, 1 the best.
- * Every other row, soft-deleted, unserved or null, holds neither. `served`
- * is the site's own predicate, passed in so it is never restated here.
+ * The published rating: each served org with a final score is placed among
+ * the served orgs of its own cohort and primary stakeholder category — the
+ * share of them scoring at or below it (CUME_DIST, so tied orgs share one
+ * percentile and the top org is 1) and its competition rank, 1 the best. An
+ * org with no category ranks among the others with none. Every other row,
+ * soft-deleted, unserved or null, holds neither. `served` is the site's own
+ * predicate, passed in so it is never restated here.
  */
 export async function rankOrgs(db: Pick<PrismaClient, "organizationTable" | "$executeRaw">, served: Prisma.OrganizationTableWhereInput): Promise<void> {
 	console.log("\n📊 Ranking organizations...");
@@ -357,8 +359,8 @@ export async function rankOrgs(db: Pick<PrismaClient, "organizationTable" | "$ex
 			FROM "OrganizationTable" o
 			LEFT JOIN (
 				SELECT "organizationKey",
-					CUME_DIST() OVER (PARTITION BY "scoreCohort" ORDER BY "scoreOrgFinal") AS p,
-					RANK() OVER (PARTITION BY "scoreCohort" ORDER BY "scoreOrgFinal" DESC)::int AS k
+					CUME_DIST() OVER (PARTITION BY "scoreCohort", COALESCE("primaryStakeholderCategory", '') ORDER BY "scoreOrgFinal") AS p,
+					RANK() OVER (PARTITION BY "scoreCohort", COALESCE("primaryStakeholderCategory", '') ORDER BY "scoreOrgFinal" DESC)::int AS k
 				FROM "OrganizationTable"
 				WHERE "organizationKey" = ANY(${keys}::text[])
 				  AND "deletedAt" IS NULL
