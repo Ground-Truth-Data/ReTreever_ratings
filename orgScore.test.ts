@@ -4,35 +4,43 @@ import { disclosure, NO_SCORE, orgWhere, PLANTING_OWNER_ROLES, propagateDirtyToP
 type Row = Record<string, unknown>;
 type Where = Record<string, unknown>;
 
-/** Prisma's WHERE over plain rows: `null` matches a null column, `{ in }` a list. */
-const matches = (r: Row, where: Where) =>
+/** Prisma's WHERE over plain rows: `null` matches a null column, `{ in }` a list, `AND` every clause. */
+const matches = (r: Row, where: Where): boolean =>
 	Object.entries(where).every(([k, v]) =>
-		v === null
-			? r[k] == null
-			: typeof v === "object" && v && "in" in v
-				? (v as { in: unknown[] }).in.includes(r[k])
-				: r[k] === v,
+		k === "AND"
+			? (v as Where[]).every((w) => matches(r, w))
+			: v === null
+				? r[k] == null
+				: typeof v === "object" && v && "in" in v
+					? (v as { in: unknown[] }).in.includes(r[k])
+					: r[k] === v,
 	);
 
 const gone = new Date("2026-09-01");
 const orgs: Row[] = [
-	{ organizationKey: "live-dirty", scoreOrgFlag: true, deletedAt: null },
-	{ organizationKey: "live-clean", scoreOrgFlag: false, deletedAt: null },
-	{ organizationKey: "gone-dirty", scoreOrgFlag: true, deletedAt: gone },
-	{ organizationKey: "gone-clean", scoreOrgFlag: false, deletedAt: gone },
+	{ organizationKey: "live-dirty", scoreOrgFlag: true, deletedAt: null, isParent: true },
+	{ organizationKey: "live-clean", scoreOrgFlag: false, deletedAt: null, isParent: true },
+	{ organizationKey: "gone-dirty", scoreOrgFlag: true, deletedAt: gone, isParent: true },
+	{ organizationKey: "gone-clean", scoreOrgFlag: false, deletedAt: gone, isParent: true },
+	{ organizationKey: "unserved-dirty", scoreOrgFlag: true, deletedAt: null, isParent: null },
 ];
+const served = { isParent: true };
 const targets = (where: Where) => orgs.filter((r) => matches(r, where)).map((r) => r.organizationKey);
 
 describe("orgWhere", () => {
-	it("a dirty run takes live dirty rows, --full every live row, never a soft-deleted one", () => {
-		expect(targets(orgWhere(false))).toEqual(["live-dirty"]);
-		expect(targets(orgWhere(true))).toEqual(["live-dirty", "live-clean"]);
+	it("a dirty run takes live dirty served rows, --full every live served row, never a soft-deleted or unserved one", () => {
+		expect(targets(orgWhere(false, served) as Where)).toEqual(["live-dirty"]);
+		expect(targets(orgWhere(true, served) as Where)).toEqual(["live-dirty", "live-clean"]);
 	});
 
 	it("named orgs are filtered the same way", () => {
-		expect(targets(orgWhere(true, ["gone-dirty", "live-clean"]))).toEqual(["live-clean"]);
-		expect(targets(orgWhere(false, ["gone-dirty", "live-clean"]))).toEqual([]);
-		expect(targets(orgWhere(false, ["live-dirty"]))).toEqual(["live-dirty"]);
+		expect(targets(orgWhere(true, served, ["gone-dirty", "live-clean", "unserved-dirty"]) as Where)).toEqual(["live-clean"]);
+		expect(targets(orgWhere(false, served, ["gone-dirty", "live-clean"]) as Where)).toEqual([]);
+		expect(targets(orgWhere(false, served, ["live-dirty"]) as Where)).toEqual(["live-dirty"]);
+	});
+
+	it("the site's predicate is the run's: a scope that serves everything scores everything live", () => {
+		expect(targets(orgWhere(false, { deletedAt: null }) as Where)).toEqual(["live-dirty", "unserved-dirty"]);
 	});
 });
 

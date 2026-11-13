@@ -1,10 +1,10 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { pgliteDb, type TestDb } from "$parent/tests/pglite/pgliteDb";
 import { GOLDEN_ORGS, runGolden, seedGolden } from "./golden.fixture";
 import { openScoreRun, useScoreDb } from "./scoreDb";
 import { matrixPoints } from "./scoreMatrix";
 import { servedOrgWhere } from "$parent/src/lib/core/servedOrgs";
-import { rankOrgs } from "./orgScore";
+import { clearUnserved, NO_SCORE, rankOrgs } from "./orgScore";
 import { rankOnlyOrgs, scoreAndRankOrgs } from "./score_orgs";
 import { rank_projects, score_projects } from "./score_projects";
 import { snapshotRun } from "./scoreSnapshot";
@@ -24,7 +24,7 @@ beforeEach(() => t.reset());
 
 async function seed() {
 	const db = t.prisma;
-	await db.organizationTable.create({ data: { organizationKey: "o-1", organizationName: "One", scoreOrgFlag: true } });
+	await db.organizationTable.create({ data: { organizationKey: "o-1", organizationName: "One", isParent: true, scoreOrgFlag: true } });
 	await db.organizationTable.create({ data: { organizationKey: "o-2", organizationName: "Two (no projects)", scoreOrgFlag: true } });
 	for (const [projectKey, trees] of [["a-1", 40], ["a-2", 0], ["a-3", 7]] as const) {
 		await db.projectTable.create({ data: { projectKey, projectName: projectKey, scoreProjectFlag: true } });
@@ -216,7 +216,74 @@ describe("an org is ranked among its own cohort and category", () => {
 		await seed();
 		const runId = await fullRun();
 		expect(await t.prisma.scoreSnapshotTable.findMany({ where: { scoreRunId: runId, entityTable: "project" }, select: { category: true } })).toEqual([{ category: null }, { category: null }, { category: null }]);
-		// o-1's projects name it developer: its row freezes that, unranked because /who does not serve it.
-		expect(await t.prisma.scoreSnapshotTable.findUniqueOrThrow({ where: { scoreRunId_entityTable_entityKey: { scoreRunId: runId, entityTable: "org", entityKey: "o-1" } }, select: { category: true, rank: true } })).toEqual({ category: "developer_ish", rank: null });
+		// o-1's projects name it developer: its row freezes that beside its rank among developers.
+		expect(await t.prisma.scoreSnapshotTable.findUniqueOrThrow({ where: { scoreRunId_entityTable_entityKey: { scoreRunId: runId, entityTable: "org", entityKey: "o-1" } }, select: { category: true, rank: true } })).toEqual({ category: "developer_ish", rank: 1 });
+	});
+});
+
+/** A served parent with a project, a listing the site does not serve still carrying a stale score, its inputs and a dirty flag, a child, and a soft-deleted org. */
+async function seedScopes() {
+	await seed();
+	const stale = { scoreOrgFinal: 0.4, scoreOrgPreClaim: 0.4, scorePointsScored: 3, scorePointsAvailable: 9, scorePercentile: 0.5, scoreRank: 2, scoreCohort: "unreviewed", primaryStakeholderCategory: "producer_ish" };
+	await t.prisma.organizationTable.createMany({
+		data: [
+			{ organizationKey: "l-1", organizationName: "Listing", scoreOrgFlag: true, ...stale },
+			{ organizationKey: "c-1", organizationName: "Child", organizationParentKey: "o-1", scoreOrgFlag: true },
+			{ organizationKey: "d-1", organizationName: "Deleted", deletedAt: new Date("2026-09-01"), ...stale },
+		],
+	});
+	await t.prisma.stakeholderTable.create({
+		data: { stakeholderKey: "l-1-s", organizationKey: "l-1", projectKey: "a-1", parentKey: "a-1", parentTable: "projectTable", stakeholderCategory: "producer_ish" },
+	});
+	await t.prisma.orgScoreInputTable.createMany({
+		data: ["l-1", "d-1"].map((organizationKey) => ({ organizationKey, projectKey: "a-1", viaOrganizationKeys: [organizationKey], scoreProject: 0.4, plantedQty: 0, scoredAt: new Date() })),
+	});
+}
+
+const orgRow = (organizationKey: string) => t.prisma.organizationTable.findUniqueOrThrow({ where: { organizationKey } });
+const inputsOf = (organizationKey: string) => t.prisma.orgScoreInputTable.count({ where: { organizationKey } });
+
+describe("a run scores only the orgs the site serves", () => {
+	afterEach(() => vi.unstubAllEnvs());
+
+	for (const full of [false, true]) {
+		it(`a ${full ? "full" : "dirty"} run clears a live org the site does not serve, scores the served one, and leaves a deleted one alone`, async () => {
+			await seedScopes();
+			const keys = (await t.prisma.projectTable.findMany({ where: { deletedAt: null }, select: { projectKey: true } })).map((p) => p.projectKey);
+			await score_projects(keys);
+			await rank_projects();
+			expect(await scoreAndRankOrgs(full)).toEqual([]);
+
+			expect(await orgRow("l-1")).toMatchObject({ ...NO_SCORE, scoreOrgFlag: false });
+			expect(await inputsOf("l-1")).toBe(0);
+			expect(await orgRow("c-1")).toMatchObject({ ...NO_SCORE, scoreOrgFlag: false });
+			expect(await orgRow("o-1")).toMatchObject({ scoreOrgFlag: false, scoreRank: 1, primaryStakeholderCategory: "developer_ish" });
+			expect((await orgRow("o-1")).scoreOrgFinal).not.toBeNull();
+			// Soft-deleted: no run touches it, served or not.
+			expect(Number((await orgRow("d-1")).scoreOrgFinal)).toBe(0.4);
+			expect(await inputsOf("d-1")).toBe(1);
+		});
+	}
+
+	it("the scope is the site's: WHO_ORG_SCOPE=all serves the listing, so the run scores it instead of clearing it", async () => {
+		vi.stubEnv("WHO_ORG_SCOPE", "all");
+		await seedScopes();
+		const keys = (await t.prisma.projectTable.findMany({ where: { deletedAt: null }, select: { projectKey: true } })).map((p) => p.projectKey);
+		await score_projects(keys);
+		await rank_projects();
+		expect(await scoreAndRankOrgs(false)).toEqual([]);
+
+		const listing = await orgRow("l-1");
+		expect(listing.scoreOrgFlag).toBe(false);
+		expect(listing.scoreOrgFinal).not.toBeNull();
+		expect(listing.scoreRank).toBe(1);
+		expect(await inputsOf("l-1")).toBe(1);
+	});
+
+	it("a second run clears nothing more", async () => {
+		await seedScopes();
+		const served = servedOrgWhere();
+		expect(await clearUnserved(t.prisma, served)).toBe(3);
+		expect(await clearUnserved(t.prisma, served)).toBe(0);
 	});
 });

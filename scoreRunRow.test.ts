@@ -90,7 +90,8 @@ describe("openScoreRun", () => {
 async function seedProject(projectKey: string) {
 	const db = t.prisma;
 	await db.projectTable.create({ data: { projectKey, projectName: `Project ${projectKey}`, scoreProjectFlag: true } });
-	await db.organizationTable.create({ data: { organizationKey: `o-${projectKey}`, organizationName: "Org", scoreOrgFlag: true } });
+	// A parent: a run scores only the orgs the site serves.
+	await db.organizationTable.create({ data: { organizationKey: `o-${projectKey}`, organizationName: "Org", isParent: true, scoreOrgFlag: true } });
 	await db.landTable.create({ data: { landKey: `${projectKey}-l1`, landName: "Plot", projectKey, hectares: 3, latitude: 1.5, longitude: 2.5 } });
 	await db.polygonTable.create({ data: { polygonKey: `${projectKey}-g1`, landKey: `${projectKey}-l1`, geometry: { type: "Polygon", coordinates: [[[0, 0], [1, 0], [1, 1], [0, 0]]] } } });
 	await db.plantingTable.create({ data: { plantingKey: `${projectKey}-t1`, projectKey, parentKey: `${projectKey}-l1`, parentTable: "landTable", plantedQty: 40 } });

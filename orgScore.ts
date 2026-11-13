@@ -34,14 +34,45 @@ export const NO_SCORE = {
  * without is ranked among orgs whose claims are not yet reviewed. */
 export type Cohort = "reviewed" | "unreviewed";
 
-/** The rows a run scores: live ones — dirty unless `full`, only `orgIds`
- * when given. A soft-deleted org is never rescored, whatever its flag says. */
-export function orgWhere(full: boolean, orgIds?: string[]) {
+/** The rows a run scores: the live ones the site serves — dirty unless
+ * `full`, only `orgIds` when given. A soft-deleted org is never rescored,
+ * whatever its flag says. `served` is the site's own predicate, passed in so
+ * it is never restated here. */
+export function orgWhere(full: boolean, served: Prisma.OrganizationTableWhereInput, orgIds?: string[]): Prisma.OrganizationTableWhereInput {
 	return {
 		deletedAt: null,
 		...(full ? {} : { scoreOrgFlag: true }),
 		...(orgIds ? { organizationKey: { in: orgIds } } : {}),
+		AND: [served],
 	};
+}
+
+/**
+ * Every live org the site does not serve carries no score: the nulls a child
+ * gets, its inputs deleted and its flag cleared, so a number never resurfaces
+ * once an org stops being served. Set-based, one statement per table. Matched
+ * by key against the served list, not by NOT(served): NOT over a NULL
+ * `isParent` is NULL, and would keep every row it should clear. Returns how
+ * many orgs it cleared.
+ */
+export async function clearUnserved(db: Pick<PrismaClient, "organizationTable" | "$executeRaw">, served: Prisma.OrganizationTableWhereInput): Promise<number> {
+	const keys = (await db.organizationTable.findMany({ where: served, select: { organizationKey: true } })).map((o) => o.organizationKey);
+	await db.$executeRaw`
+		DELETE FROM "OrgScoreInputTable" i
+		USING "OrganizationTable" o
+		WHERE o."organizationKey" = i."organizationKey"
+		  AND o."deletedAt" IS NULL
+		  AND NOT (o."organizationKey" = ANY(${keys}::text[]))
+	`;
+	const { count } = await db.organizationTable.updateMany({
+		where: {
+			deletedAt: null,
+			organizationKey: { notIn: keys },
+			OR: [...Object.keys(NO_SCORE).map((column) => ({ [column]: { not: null } }) as Prisma.OrganizationTableWhereInput), { scoreOrgFlag: true }],
+		},
+		data: { ...NO_SCORE, scoreLastUpdatedAt: new Date(), scoreOrgFlag: false },
+	});
+	return count;
 }
 
 /** A dirty child dirties its parent, one UPDATE per level until a pass marks

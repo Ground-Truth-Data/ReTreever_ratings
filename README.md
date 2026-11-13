@@ -89,6 +89,11 @@ A test holds this table equal to `SCORE_MATRIX`.
 
 ### An organization's score
 
+Only the organizations the site shows are scored: each one a parent, its
+numbers read across the listings under it. A listing on its own carries no
+score, and an organization that stops being shown loses its score at the next
+run, so no number survives that the site no longer stands behind.
+
 1. **The projects.** Every live project the organization (with every listing
    under it) is a stakeholder in, each counted once. Listings known to be the
    same planting count as one.

@@ -1,5 +1,6 @@
 #!/usr/bin/env tsx
 import {
+	clearUnserved,
 	orgWhere,
 	propagateDirtyToParents,
 	rankOrgs,
@@ -24,11 +25,11 @@ export async function score_orgs(
 	const runId = scoreRunId ?? (await openScoreRun(prisma));
 	const orgsToScore = orgIds
 		? await prisma.organizationTable.findMany({
-				where: orgWhere(full, orgIds),
+				where: orgWhere(full, servedOrgWhere(), orgIds),
 				select: { organizationKey: true },
 			})
 		: await prisma.organizationTable.findMany({
-				where: orgWhere(full),
+				where: orgWhere(full, servedOrgWhere()),
 				select: { organizationKey: true },
 				take: batchSize,
 				orderBy: { scoreLastUpdatedAt: "asc" },
@@ -55,8 +56,9 @@ export async function score_orgs(
 }
 
 /** The org run `npm run score` and Foundr's orchestrator share: a dirty child
- * dirties its parent, the dirty rows (every row with `full`) are scored in
- * batches, then every org is re-ranked. Returns the keys that failed. */
+ * dirties its parent, every org the site does not serve is cleared, the dirty
+ * served rows (every served row with `full`) are scored in batches, then the
+ * served orgs are re-ranked. Returns the keys that failed. */
 export async function scoreAndRankOrgs(
 	full = false,
 	batchSize: number = config.batch.organizations.defaultSize,
@@ -73,7 +75,11 @@ export async function scoreAndRankOrgs(
 		console.log(`\n⬆️  ${dirtiedParents} parent organization(s) dirtied by a dirty child`);
 	}
 
-	const where = orgWhere(full);
+	const served = servedOrgWhere();
+	const cleared = await clearUnserved(prisma, served);
+	if (cleared > 0) console.log(`\n🧹 ${cleared} organization(s) the site does not serve cleared of their scores`);
+
+	const where = orgWhere(full, served);
 
 	// --full snapshots the target list once: score_orgs() stamps
 	// scoreLastUpdatedAt, so a cursor on it would chase a moving target.
@@ -118,7 +124,7 @@ export async function scoreAndRankOrgs(
 		);
 	}
 
-	await rankOrgs(prisma, servedOrgWhere());
+	await rankOrgs(prisma, served);
 	// A run with a failed org left it on its old score: not a whole run, so never completed or publishable.
 	if (scoreRunId && failed.length === 0) {
 		const drifted = await snapshotRun(prisma, scoreRunId);
