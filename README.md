@@ -25,8 +25,12 @@ page shows no rating.
 **Organizations are compared within their primary stakeholder category**
 (developers against developers, producers against producers), the role they
 hold on most of their projects (`primaryStakeholderCategory`, Tier 8). One with
-no category is compared with the others that have none. **Within each category,
-within a cohort:**
+no category is compared with the others that have none. A category with fewer
+than five ranked organizations in a cohort (`minCategoryGroup` in
+`scoreConfig.json`) is too small to compare within: its organizations are
+placed among every ranked organization of the cohort instead, and their page
+says so ("34th of 86 organizations"). **Within each category, within a
+cohort:**
 
 - **Reviewed claims.** An organization with at least one current claim of a
   tree count, on a source validated against its latest capture, is ranked
