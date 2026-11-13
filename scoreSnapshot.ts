@@ -80,7 +80,10 @@ export async function snapshotRun(db: SnapshotDb, scoreRunId: string): Promise<s
 					SELECT 1 FROM "ScoreSnapshotTable" s WHERE s."scoreRunId" = ${scoreRunId} AND NOT s."reconciled"
 				)
 			WHERE "scoreRunId" = ${scoreRunId}`,
-	]);
+		],
+		// Freezing every project and org takes ~30 s on dev, far past Prisma's 5 s default.
+		{ timeout: 600_000, maxWait: 60_000 },
+	);
 	const drifted = await db.scoreSnapshotTable.findMany({
 		where: { scoreRunId, reconciled: false },
 		select: { entityTable: true, entityKey: true },
