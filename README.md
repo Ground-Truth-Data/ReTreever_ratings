@@ -26,20 +26,24 @@ page shows no rating.
 (developers against developers, producers against producers), the role they
 hold on most of their projects (`primaryStakeholderCategory`, Tier 8). One with
 no category is compared with the others that have none. A category with fewer
-than five ranked organizations in a cohort (`minCategoryGroup` in
-`scoreConfig.json`) is too small to compare within: its organizations are
-placed among every ranked organization of the cohort instead, and their page
-says so ("34th of 86 organizations"). **Within each category, within a
-cohort:**
+than five ranked organizations (`minCategoryGroup` in `scoreConfig.json`) is
+too small to compare within: its organizations are placed among every ranked
+organization instead, and their page says so ("34th of 86 organizations").
+
+**There is one ranking.** Every organization is labelled by its claims, and
+the label never splits the ranking:
 
 - **Reviewed claims.** An organization with at least one current claim of a
-  tree count, on a source validated against its latest capture, is ranked
-  among the others like it.
-- **Claims not yet reviewed.** An organization with no such claim is ranked
-  only among organizations in the same position, and its page says so
-  ("Percentile among organizations whose claims are not yet reviewed"). Its
-  score has no disclosure ratio to apply (below), so ranking it against the
-  reviewed cohort would compare two different measures.
+  tree count, on a source validated against its latest capture. Its score is
+  its weighted mean times its disclosure ratio (below).
+- **Claims not yet reviewed.** An organization with no such claim. Its score
+  is its weighted mean alone: there is no ratio to apply.
+
+Both are ranked together, in the same category. Because the ratio is at most
+1, a reviewed claim can only lower an organization's place; that it has no
+reviewed claim is said by its label, not by ranking it apart. A run of
+methodology version 1, which ranked each kind only among its own, can no
+longer be published.
 
 The rating page names the score run it was read from. Every run is recorded
 (§ Every run is recorded), so a published rating traces back to the code and
@@ -121,7 +125,7 @@ landowner (`plantingOwnerRoles` in `scoreConfig.json`). A sponsor,
 marketplace or research partner is credited with the project's documentation
 in its weighted mean, never with its trees. An organization that owns no
 plantings has no disclosure ratio whatever it claims (neither 0 nor full
-disclosure): it is ranked with the "claims not yet reviewed" cohort, on its
+disclosure): it is labelled "claims not yet reviewed" and scored on its
 weighted mean alone.
 
 An organization with nothing scored has no score and no rating (null), not a
