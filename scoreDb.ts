@@ -45,6 +45,12 @@ export function scoreDb(): PrismaClient {
 		connectionString,
 		max: scoreConfig.pool.maxConnections,
 		ssl: { rejectUnauthorized: false },
+		// A socket the pooler drops without a reset looks open forever: on 16 Nov a wave's project rescore
+		// waited on one for over an hour, holding the wave. Keepalive finds it; the timeout bounds a statement.
+		keepAlive: true,
+		keepAliveInitialDelayMillis: 30_000,
+		connectionTimeoutMillis: 30_000,
+		query_timeout: 300_000,
 	});
 	namePool(ownPool, "score pool");
 	client = new PrismaClient({ adapter: new PrismaPg(ownPool) });
