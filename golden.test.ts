@@ -4,7 +4,7 @@ import { GOLDEN_ORGS, type GoldenOrg, type GoldenOutcome, runGolden, seedGolden 
 import { matrixPoints } from "./scoreMatrix";
 
 // The method's outcomes, pinned: eight orgs scored from seeded records with the
-// live weights, ranked within the served population, each given its cohort.
+// live weights, ranked within the served population, each labelled with its cohort.
 // A change to the method or a weight moves a row here, and the diff says which.
 
 let t: TestDb;
@@ -20,27 +20,33 @@ beforeEach(async () => {
 
 // Every project offers 82 points under today's schema and weights (the
 // co-funded one 84: two stakeholder rows); the comments say what each org
-// lost or kept. Every category here is under the minimum group of five, so each
-// org ranks among its whole cohort: the reviewed cohort is four, so quarters.
+// lost or kept. Reviewed and unreviewed rank together. Six orgs are developers
+// (the developer by its role on the co-funded project), over the minimum of
+// five, so they rank among themselves; by final, best first: noClaim and
+// unvalidated tied at .52439 (RANK 1, 1), validated 3, overClaim 4, restated 5,
+// developer 6, and CUME_DIST is the share of the six at or below: 6, 6, 4, 3,
+// 2, 1 sixths. The sponsor is alone in its category, so it ranks among all
+// seven ranked orgs: only the two .52439 orgs score above it (rank 3), and it
+// and the four reviewed developers are at or below it, 5/7.
 const GOLDEN: Record<GoldenOrg, GoldenOutcome> = {
-	// 43/82, no claim: its own cohort, the pre-claim score, tied with unvalidated.
+	// 43/82, no claim: the pre-claim score, tied with unvalidated.
 	noClaim: { final: 0.52439, ratio: null, cohort: "unreviewed", percentile: 1, rank: 1, claimKeys: [] },
 	// No coordinates: 33/82 × 800/1000.
-	validated: { final: 0.321951, ratio: 0.8, cohort: "reviewed", percentile: 1, rank: 1, claimKeys: ["validated-1"] },
+	validated: { final: 0.321951, ratio: 0.8, cohort: "reviewed", percentile: 0.666667, rank: 3, claimKeys: ["validated-1"] },
 	// A `{}` polygon earns nothing: 23/82 × 500/100 capped at 1.
-	overClaim: { final: 0.280488, ratio: 1, cohort: "reviewed", percentile: 0.75, rank: 2, claimKeys: ["overClaim-1"] },
+	overClaim: { final: 0.280488, ratio: 1, cohort: "reviewed", percentile: 0.5, rank: 4, claimKeys: ["overClaim-1"] },
 	// Its only claim is unvalidated: no ratio, never full disclosure among the reviewed.
 	unvalidated: { final: 0.52439, ratio: null, cohort: "unreviewed", percentile: 1, rank: 1, claimKeys: [] },
 	// 38/68 (no crop) × 500/(1000 + 250): the restatement and the latest seedlings claim.
-	restated: { final: 0.223529, ratio: 0.4, cohort: "reviewed", percentile: 0.5, rank: 3, claimKeys: ["restated-2", "restated-5"] },
+	restated: { final: 0.223529, ratio: 0.4, cohort: "reviewed", percentile: 0.333333, rank: 5, claimKeys: ["restated-2", "restated-5"] },
 	// No project: null, unranked, no cohort.
 	nothing: { final: null, ratio: null, cohort: null, percentile: null, rank: null, claimKeys: [] },
 	// Funds the co-funded project and claims 6000 of its trees, owns none of
 	// them: no ratio, its claim summed nowhere, its mean 35/84 kept whole. The
-	// only sponsor, so it ranks among the whole unreviewed cohort, third of three.
-	sponsor: { final: 0.416667, ratio: null, cohort: "unreviewed", percentile: 0.333333, rank: 3, claimKeys: [] },
+	// only sponsor, so it ranks among all seven, third.
+	sponsor: { final: 0.416667, ratio: null, cohort: "unreviewed", percentile: 0.714286, rank: 3, claimKeys: [] },
 	// Develops it, so owns its 600 trees: 35/84 × 600/1500.
-	developer: { final: 0.166667, ratio: 0.4, cohort: "reviewed", percentile: 0.25, rank: 4, claimKeys: ["developer-1"] },
+	developer: { final: 0.166667, ratio: 0.4, cohort: "reviewed", percentile: 0.166667, rank: 6, claimKeys: ["developer-1"] },
 };
 
 describe("golden: eight disputes, settled", () => {

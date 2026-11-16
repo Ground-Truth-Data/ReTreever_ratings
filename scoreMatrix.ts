@@ -31,7 +31,7 @@ export const SCORE_MATRIX: Record<
 /** Bumped when the method itself changes meaning — what counts as a field,
  * a tier, a baseline — not when a weight moves; a weight change is in
  * `matrixHash`. */
-export const METHODOLOGY_VERSION = "1";
+export const METHODOLOGY_VERSION = "2";
 
 /** The weights as the scorer applies them: field → points. */
 export function matrixPoints(): Map<string, number> {

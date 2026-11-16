@@ -35,9 +35,9 @@ const breakdownOf = (lines: string) => `
  * the points-weighted mean of the scored projects it averaged. Unscored rows
  * reconcile: they show no breakdown. A project's percentile is the PERCENT_RANK
  * rank_projects stored; its rank, 1 = best, is counted here. An org's
- * percentile and rank are rankOrgs', within its cohort and the group frozen
- * beside them as `category`: its category, or `all` when that group was under
- * the minimum and it ranked among the whole cohort. Returns the keys that did
+ * percentile and rank are rankOrgs', within the group frozen beside them as
+ * `category`: its category, or `all` when that group was under the minimum and
+ * it ranked among every ranked org. Returns the keys that did
  * not reconcile.
  */
 export async function snapshotRun(db: SnapshotDb, scoreRunId: string): Promise<string[]> {
@@ -75,9 +75,9 @@ export async function snapshotRun(db: SnapshotDb, scoreRunId: string): Promise<s
 					SUM("scoreProject" * "scorePointsAvailable") / NULLIF(SUM("scorePointsAvailable") FILTER (WHERE "scorePointsAvailable" > 0), 0) AS mean
 				FROM "OrgScoreInputTable" WHERE "scoreProject" IS NOT NULL GROUP BY 1
 			) n ON n."organizationKey" = o."organizationKey"
-			-- The group rankOrgs ranked it within: its category, or the whole cohort when that group is small.
+			-- The group rankOrgs ranked it within: its category, or every ranked org when that group is small.
 			LEFT JOIN (
-				SELECT "organizationKey", COUNT(*) OVER (PARTITION BY "scoreCohort", COALESCE("primaryStakeholderCategory", '')) AS n
+				SELECT "organizationKey", COUNT(*) OVER (PARTITION BY COALESCE("primaryStakeholderCategory", '')) AS n
 				FROM "OrganizationTable" WHERE "deletedAt" IS NULL AND "scoreRank" IS NOT NULL
 			) g ON g."organizationKey" = o."organizationKey"
 			WHERE o."deletedAt" IS NULL`,

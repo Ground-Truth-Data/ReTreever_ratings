@@ -133,9 +133,9 @@ describe("a full run's snapshot", () => {
 });
 
 /**
- * Served orgs already scored, as a scoring run leaves them. Unreviewed: five developers (a group at the minimum),
- * four producers and one with no category (both under it); reviewed: one developer, alone in its cohort.
- * Unreviewed by score, all ten: p-1 .95, d-1 .9, d-2 .8, p-2 .7, n-1 .6, d-3 .5, d-4 .5, p-3 .3, p-4 .2, d-5 .1.
+ * Served orgs already scored, as a scoring run leaves them: six developers (five unreviewed, r-1 reviewed: a group
+ * over the minimum), four producers and one with no category (both under it). The cohort is no partition.
+ * All eleven by score: p-1 .95, d-1 .9, d-2 .8, p-2 .7, n-1 .6, d-3 .5, d-4 .5, p-3 .3, p-4 .2, d-5 .1, r-1 .05.
  */
 async function seedScored() {
 	const org = (organizationKey: string, scoreOrgFinal: number, primaryStakeholderCategory: string | null, scoreCohort = "unreviewed") =>
@@ -158,34 +158,38 @@ async function seedScored() {
 	});
 }
 
+// The stored percentile is numeric, so 5/6 comes back to 15 places.
+const six = (v: number) => Math.round(v * 1e6) / 1e6;
+const share = (atOrBelow: number, of: number) => six(atOrBelow / of);
+
 const ranksOf = async () =>
 	Object.fromEntries(
 		(await t.prisma.organizationTable.findMany({ where: { scoreOrgFinal: { not: null } }, select: { organizationKey: true, scoreRank: true, scorePercentile: true } })).map((o) => [
 			o.organizationKey,
-			[o.scoreRank, Number(o.scorePercentile)],
+			[o.scoreRank, six(Number(o.scorePercentile))],
 		]),
 	);
 
-describe("an org is ranked among its own cohort and category, or the whole cohort when its category is small", () => {
-	it("a group of five ranks within itself; a group of four and a group of one rank among all ten of the cohort", async () => {
+describe("an org is ranked among its category, reviewed and unreviewed together, or among all when its category is small", () => {
+	it("a group of six ranks within itself; a group of four and a group of one rank among all eleven", async () => {
 		await seedScored();
 		await rankOrgs(t.prisma, servedOrgWhere());
 		expect(MIN_CATEGORY_GROUP).toBe(5);
 		expect(await ranksOf()).toEqual({
-			// Five developers: among themselves.
-			"d-1": [1, 1],
-			"d-2": [2, 0.8],
-			"d-3": [3, 0.6],
-			"d-4": [3, 0.6],
-			"d-5": [5, 0.2],
-			// Four producers and one with no category: their places among all ten, the same as their overall ones.
-			"p-1": [1, 1],
-			"p-2": [4, 0.7],
-			"p-3": [8, 0.3],
-			"p-4": [9, 0.2],
-			"n-1": [5, 0.6],
-			// Alone in the reviewed cohort, which is all it falls back to: the unreviewed never outrank it.
-			"r-1": [1, 1],
+			// Six developers among themselves; CUME_DIST is the share of the six at or below.
+			"d-1": [1, share(6, 6)],
+			"d-2": [2, share(5, 6)],
+			"d-3": [3, share(4, 6)],
+			"d-4": [3, share(4, 6)],
+			"d-5": [5, share(2, 6)],
+			// Reviewed, and scored below every unreviewed developer: last of the six, not 1st of 1.
+			"r-1": [6, share(1, 6)],
+			// Four producers and one with no category: their places among all eleven.
+			"p-1": [1, share(11, 11)],
+			"p-2": [4, share(8, 11)],
+			"p-3": [8, share(4, 11)],
+			"p-4": [9, share(3, 11)],
+			"n-1": [5, share(7, 11)],
 		});
 	});
 
@@ -193,7 +197,7 @@ describe("an org is ranked among its own cohort and category, or the whole cohor
 		await seedScored();
 		await rankOrgs(t.prisma, servedOrgWhere(), 1);
 		const r = await ranksOf();
-		expect([r["p-1"], r["p-2"], r["n-1"], r["d-2"]]).toEqual([[1, 1], [2, 0.75], [1, 1], [2, 0.8]]);
+		expect([r["p-1"], r["p-2"], r["n-1"], r["d-2"]]).toEqual([[1, 1], [2, 0.75], [1, 1], [2, share(5, 6)]]);
 	});
 
 	it("--rank-only re-ranks and freezes today's scores as a completed run, each org's group beside its rank (\"all\" for a fallback), scoring nothing", async () => {
@@ -220,7 +224,7 @@ describe("an org is ranked among its own cohort and category, or the whole cohor
 			{ entityKey: "p-2", rank: 4, category: ALL_GROUP, cohort: "unreviewed" },
 			{ entityKey: "p-3", rank: 8, category: ALL_GROUP, cohort: "unreviewed" },
 			{ entityKey: "p-4", rank: 9, category: ALL_GROUP, cohort: "unreviewed" },
-			{ entityKey: "r-1", rank: 1, category: ALL_GROUP, cohort: "reviewed" },
+			{ entityKey: "r-1", rank: 6, category: "developer_ish", cohort: "reviewed" },
 		]);
 	});
 
@@ -239,7 +243,7 @@ describe("an org is ranked among its own cohort and category, or the whole cohor
 		await seed();
 		const runId = await fullRun();
 		expect(await t.prisma.scoreSnapshotTable.findMany({ where: { scoreRunId: runId, entityTable: "project" }, select: { category: true } })).toEqual([{ category: null }, { category: null }, { category: null }]);
-		// o-1's projects name it developer, but it is the only ranked org: it ranks among the whole cohort, frozen as "all".
+		// o-1's projects name it developer, but it is the only ranked org: it ranks among all of them, frozen as "all".
 		expect(await t.prisma.scoreSnapshotTable.findUniqueOrThrow({ where: { scoreRunId_entityTable_entityKey: { scoreRunId: runId, entityTable: "org", entityKey: "o-1" } }, select: { category: true, rank: true } })).toEqual({ category: ALL_GROUP, rank: 1 });
 	});
 });
