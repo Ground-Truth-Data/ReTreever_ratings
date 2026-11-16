@@ -42,8 +42,8 @@ the label never splits the ranking:
 Both are ranked together, in the same category. Because the ratio is at most
 1, a reviewed claim can only lower an organization's place; that it has no
 reviewed claim is said by its label, not by ranking it apart. A run of
-methodology version 1, which ranked each kind only among its own, can no
-longer be published.
+methodology version 1, which ranked each kind only among its own, is neither
+published nor served.
 
 The rating page names the score run it was read from. Every run is recorded
 (§ Every run is recorded), so a published rating traces back to the code and
