@@ -17,6 +17,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import pg from "pg";
 import { PrismaClient } from "$parent/prisma/generated/prisma-postgres/client.js";
 import { namePool } from "$parent/src/lib/server/runLock.js";
+import { logicDriftLines, scoreLogicDrift } from "./scoreLogic.js";
 import { matrixHash, METHODOLOGY_VERSION, seedScoreMatrix } from "./scoreMatrix.js";
 
 const RATINGS_DIR = dirname(fileURLToPath(import.meta.url));
@@ -74,7 +75,16 @@ export function ratingsTree(): { ratingsSha: string; dirty: boolean } {
 	return { ratingsSha: git("rev-parse", "HEAD"), dirty: git("status", "--porcelain") !== "" };
 }
 
-export type ScoreRunDb = Pick<PrismaClient, "scoreRunTable" | "foundrRunTable" | "scoreMatrixTable">;
+export type ScoreRunDb = Pick<PrismaClient, "scoreRunTable" | "foundrRunTable" | "scoreMatrixTable" | "$queryRaw">;
+
+/** Prints which stored scores predate the tree's logic. Never stops a run: a check that fails says nothing. */
+export async function warnLogicDrift(db: ScoreRunDb): Promise<void> {
+	try {
+		for (const line of logicDriftLines(await scoreLogicDrift(db))) console.warn(line);
+	} catch {
+		// A fake db, a dead git: the run goes on.
+	}
+}
 
 /**
  * Starts a score run: the weights table is made equal to git, then one
@@ -82,9 +92,11 @@ export type ScoreRunDb = Pick<PrismaClient, "scoreRunTable" | "foundrRunTable" |
  * score row the run writes. The Foundr run is the one the process carries
  * (`FOUNDR_RUN_ID`, set when the orchestrator scores inside its own run), else
  * the newest, whose upsert set the flags being scored; its per-site ledger
- * hashes, hashed together, are the ledgers behind those rows.
+ * hashes, hashed together, are the ledgers behind those rows. Before it, the
+ * terminal is told which stored scores an older scorer wrote.
  */
 export async function openScoreRun(db: ScoreRunDb): Promise<string> {
+	await warnLogicDrift(db);
 	await seedScoreMatrix(db);
 	const select = { runId: true, ledgerHashes: true };
 	const carried = process.env.FOUNDR_RUN_ID;
