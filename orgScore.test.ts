@@ -1,14 +1,16 @@
 import { describe, expect, it } from "vitest";
+import { DEMO_NAME_LIKE, PUBLIC_ORG_KEY } from "$parent/src/lib/core/servedOrgs";
 import { disclosure, NO_SCORE, orgWhere, PLANTING_OWNER_ROLES, propagateDirtyToParents, rankOrgs, scoreOneOrg, weightedMean } from "./orgScore";
 
 type Row = Record<string, unknown>;
 type Where = Record<string, unknown>;
 
-/** Prisma's WHERE over plain rows: `null` matches a null column, `{ in }` a list, `AND` every clause. */
+/** Prisma's WHERE over plain rows: `null` matches a null column, `{ in }` a list, `AND` every clause. PUBLIC_ORG_KEY
+ *  passes every stub org, which carries no name; Postgres proves it in demoListings.test.ts. */
 const matches = (r: Row, where: Where): boolean =>
 	Object.entries(where).every(([k, v]) =>
 		k === "AND"
-			? (v as Where[]).every((w) => matches(r, w))
+			? (v as Where[]).every((w) => w === PUBLIC_ORG_KEY || matches(r, w))
 			: v === null
 				? r[k] == null
 				: typeof v === "object" && v && "in" in v
@@ -286,7 +288,7 @@ describe("scoreOneOrg", () => {
 		await scoreOneOrg(db, "P", "run-1");
 
 		const subtree = ["P", "A", "B"];
-		expect(sql.map((q) => q.values)).toEqual([[subtree, subtree, PLANTING_OWNER_ROLES, subtree], [], [subtree], [subtree]]);
+		expect(sql.map((q) => q.values)).toEqual([[subtree, subtree, PLANTING_OWNER_ROLES, DEMO_NAME_LIKE, subtree], [], [subtree], [subtree]]);
 		for (const q of [sql[0], sql[2], sql[3]]) expect(q.text).toMatch(/"deletedAt" IS NULL/);
 		expect(sql[2].text).toMatch(/"isValidated" IS TRUE/);
 		expect(sql[2].text).toMatch(/"validatedManifestSha" IS NOT DISTINCT FROM s\."captureManifestSha"/);

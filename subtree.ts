@@ -1,4 +1,5 @@
 import type { PrismaClient } from "$parent/prisma/generated/prisma-postgres/client.js";
+import { PUBLIC_ORG_KEY } from "$parent/src/lib/core/servedOrgs.js";
 
 /** Levels below a root before the walk gives up — unbounded, a cycle in the
  * parent column would spin the cron instead of failing it. */
@@ -33,7 +34,7 @@ export async function walkDown(
 	}
 }
 
-/** The org and every live org under it through `organizationParentKey`. */
+/** The org and every live org under it through `organizationParentKey`, less a child the site hides by key or demo name, and all under it. */
 export function orgSubtree(
 	db: Pick<PrismaClient, "organizationTable">,
 	organizationKey: string,
@@ -41,7 +42,7 @@ export function orgSubtree(
 	return walkDown(organizationKey, async (parents) =>
 		(
 			await db.organizationTable.findMany({
-				where: { organizationParentKey: { in: parents }, deletedAt: null },
+				where: { AND: [{ organizationParentKey: { in: parents }, deletedAt: null }, PUBLIC_ORG_KEY] },
 				select: { organizationKey: true },
 			})
 		).map((o) => o.organizationKey),

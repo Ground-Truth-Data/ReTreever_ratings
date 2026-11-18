@@ -1,4 +1,5 @@
 import type { Prisma, PrismaClient } from "$parent/prisma/generated/prisma-postgres/client.js";
+import { DEMO_NAME_LIKE } from "$parent/src/lib/core/servedOrgs.js";
 import { clustersOf, type FoldPair, foldPairs } from "./projectClusters.js";
 import config from "./scoreConfig.json" with { type: "json" };
 import { MAX_DEPTH, orgSubtree } from "./subtree.js";
@@ -247,7 +248,7 @@ export async function scoreOneOrg(db: OrgScoreDb, organizationKey: string, score
 	// A parent scores over its subtree; a lone listing's subtree is itself.
 	const localOrgIds = await orgSubtree(db, organizationKey);
 
-	// Tier 4: every live project any org in the subtree is a stakeholder in,
+	// Tier 4: every live project not named a demo that any org in the subtree is a stakeholder in,
 	// once each however many rows point at it, with the subtree orgs that link
 	// it and its live plantings when the subtree holds an owning role on it.
 	const linked = await db.$queryRaw<LinkedProject[]>`
@@ -277,6 +278,7 @@ export async function scoreOneOrg(db: OrgScoreDb, organizationKey: string, score
                 ) AS owns
             ) o
             WHERE pt."deletedAt" IS NULL
+              AND NOT pt."projectName" ILIKE ANY(${DEMO_NAME_LIKE}::text[])
               AND pt."projectKey" IN (
                 SELECT st."projectKey"
                 FROM "StakeholderTable" st
