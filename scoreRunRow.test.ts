@@ -17,7 +17,10 @@ beforeAll(async () => {
 	vi.spyOn(console, "log").mockImplementation(() => {});
 });
 afterAll(() => t.close());
-beforeEach(() => t.reset());
+beforeEach(async () => {
+	await t.reset();
+	await t.prisma.stakeholderCategoryTable.createMany({ data: [{ stakeholderCategoryId: "nursery", stakeholderCategoryName: "Nursery" }] });
+});
 
 const gitRows = Object.entries(SCORE_MATRIX)
 	.map(([fieldName, { points, description }]) => ({ fieldName, pointsAvailable: points, description }))

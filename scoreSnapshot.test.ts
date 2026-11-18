@@ -20,7 +20,10 @@ beforeAll(async () => {
 	vi.spyOn(console, "log").mockImplementation(() => {});
 });
 afterAll(() => t.close());
-beforeEach(() => t.reset());
+beforeEach(async () => {
+	await t.reset();
+	await t.prisma.stakeholderCategoryTable.createMany({ data: [{ stakeholderCategoryId: "developer_ish", stakeholderCategoryName: "Developer" }, { stakeholderCategoryId: "producer_ish", stakeholderCategoryName: "Producer" }] });
+});
 
 async function seed() {
 	const db = t.prisma;

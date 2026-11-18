@@ -59,6 +59,10 @@ const CLAIMS: Partial<Record<GoldenOrg, Claim[]>> = {
 async function seedProject(db: PrismaClient, name: string, site: Site, stakeholders: [organizationKey: string, role: string][]): Promise<void> {
 	const projectKey = `p-${name}`;
 	await db.projectTable.create({ data: { projectKey, projectName: `${name} mangroves` } });
+	await db.stakeholderCategoryTable.createMany({
+		data: stakeholders.map(([, id]) => ({ stakeholderCategoryId: id, stakeholderCategoryName: id })),
+		skipDuplicates: true,
+	});
 	for (const [organizationKey, stakeholderCategory] of stakeholders)
 		await db.stakeholderTable.create({
 			data: { stakeholderKey: `s-${organizationKey}`, organizationKey, projectKey, parentKey: projectKey, parentTable: "projectTable", stakeholderCategory },

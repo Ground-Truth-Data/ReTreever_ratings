@@ -11,7 +11,10 @@ beforeAll(async () => {
 	t = await pgliteDb();
 });
 afterAll(() => t.close());
-beforeEach(() => t.reset());
+beforeEach(async () => {
+	await t.reset();
+	await t.prisma.stakeholderCategoryTable.createMany({ data: [{ stakeholderCategoryId: "developer_ish", stakeholderCategoryName: "Developer" }] });
+});
 
 const at = (day: number) => new Date(Date.UTC(2026, 10, day, 12));
 
