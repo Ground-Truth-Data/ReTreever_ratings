@@ -114,6 +114,46 @@ describe("a full run's snapshot", () => {
 		expect(await t.prisma.scoreSnapshotTable.findUniqueOrThrow({ where: { scoreRunId_entityTable_entityKey: { scoreRunId: runId, entityTable: "org", entityKey: "o-1" } } })).toMatchObject({ projectsScored: 3, reconciled: true });
 	});
 
+	it("a folded pair's breakdown is its members' mean, so the org reconciles; an unfolded org's is its projects' lines", async () => {
+		await seed();
+		await t.prisma.organizationTable.create({ data: { organizationKey: "o-3", organizationName: "Three", isParent: true, scoreOrgFlag: true } });
+		await t.prisma.stakeholderTable.create({
+			data: { stakeholderKey: "a-3-s3", organizationKey: "o-3", projectKey: "a-3", parentKey: "a-3", parentTable: "projectTable", stakeholderCategory: "developer_ish" },
+		});
+		await t.prisma.linkCandidateTable.create({
+			data: { table: "ProjectTable", keyA: "a-1", keyB: "a-2", method: "name-place", confidence: 0.9, foundBy: "test", resolution: "sameAs", resolvedAt: new Date() },
+		});
+		const runId = await fullRun();
+
+		const linesOf = async (projectKey: string) => {
+			const rows = await t.prisma.projectScoreByFieldTable.groupBy({ by: ["recordTable"], where: { projectKey }, _sum: { pointsAwarded: true, pointsAvailable: true } });
+			return new Map(rows.map((r) => [r.recordTable, { awarded: r._sum.pointsAwarded ?? 0, available: r._sum.pointsAvailable ?? 0 }]));
+		};
+		const [a1, a2, a3] = await Promise.all(["a-1", "a-2", "a-3"].map(linesOf));
+		const total = (m: Map<string, { awarded: number }>) => [...m.values()].reduce((s, l) => s + l.awarded, 0);
+		// The pair's by-field points differ, so its first key's lines alone would not reach the stored points.
+		expect(total(a1)).not.toBe(total(a2));
+
+		const row = async (entityKey: string) =>
+			t.prisma.scoreSnapshotTable.findUniqueOrThrow({ where: { scoreRunId_entityTable_entityKey: { scoreRunId: runId, entityTable: "org", entityKey } } });
+		const folded = await row("o-1");
+		const org = await t.prisma.organizationTable.findUniqueOrThrow({ where: { organizationKey: "o-1" } });
+		expect((await t.prisma.orgScoreInputTable.findMany({ where: { organizationKey: "o-1" }, orderBy: { projectKey: "asc" } })).map((i) => i.projectKey)).toEqual(["a-1", "a-3"]);
+		expect(folded).toMatchObject({ reconciled: true, projectsScored: 2 });
+		const lines = folded.breakdown as { recordTable: string; awarded: number; available: number }[];
+		expect(lines.reduce((s, l) => s + l.awarded, 0)).toBe(org.scorePointsScored);
+		expect(lines.reduce((s, l) => s + l.available, 0)).toBe(org.scorePointsAvailable);
+		for (const l of lines) {
+			const mean = ((a1.get(l.recordTable)?.awarded ?? 0) + (a2.get(l.recordTable)?.awarded ?? 0)) / 2;
+			expect(Math.abs(l.awarded - (a3.get(l.recordTable)?.awarded ?? 0) - mean)).toBeLessThanOrEqual(0.5);
+		}
+
+		const unfolded = await row("o-3");
+		expect(unfolded.reconciled).toBe(true);
+		expect(unfolded.breakdown).toEqual([...a3].sort(([x], [y]) => (x < y ? -1 : 1)).map(([recordTable, l]) => ({ recordTable, ...l })));
+		expect((await t.prisma.scoreRunTable.findUniqueOrThrow({ where: { scoreRunId: runId } })).reconciled).toBe(true);
+	});
+
 	it("writes all of a snapshot or none of it", async () => {
 		await seed();
 		const runId = await fullRun();
