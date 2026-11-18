@@ -34,6 +34,15 @@ export async function score_orgs(
 				take: batchSize,
 				orderBy: { scoreLastUpdatedAt: "asc" },
 			});
+	if (orgIds) {
+		const found = new Set(orgsToScore.map((o) => o.organizationKey));
+		const skipped = orgIds.filter((k) => !found.has(k));
+		if (skipped.length > 0) {
+			console.warn(
+				`\n⚠️  Skipping ${skipped.length} named organization(s): not served by the site, deleted, or not flagged dirty${full ? "" : " (--full scores a clean one)"}:\n  ${skipped.join("\n  ")}`,
+			);
+		}
+	}
 
 	console.log(`\n🏢 Scoring ${orgsToScore.length} dirty organizations...`);
 
@@ -136,8 +145,8 @@ export async function scoreAndRankOrgs(
 /** A run that scores nothing: today's scores re-ranked and frozen as a run of
  * their own, in minutes where a full org run takes hours. Refuses while a
  * served org is dirty, so it never freezes a score its inputs have moved past;
- * a dirty child dirties its parent first, as a scoring run would. Returns the
- * run's id. */
+ * a dirty child dirties its parent first and the unserved are cleared, as a
+ * scoring run would. Returns the run's id. */
 export async function rankOnlyOrgs(): Promise<string> {
 	const prisma = scoreDb();
 	await propagateDirtyToParents(prisma);
@@ -145,6 +154,8 @@ export async function rankOnlyOrgs(): Promise<string> {
 	if (dirty > 0) {
 		throw new Error(`--rank-only refused: ${dirty} served organization(s) are flagged dirty. Score them first: gitEr/CLI.sh score orgs`);
 	}
+	const cleared = await clearUnserved(prisma, servedOrgWhere());
+	if (cleared > 0) console.log(`\n🧹 ${cleared} organization(s) the site does not serve cleared of their scores`);
 	const scoreRunId = await openScoreRun(prisma);
 	await rankOrgs(prisma, servedOrgWhere());
 	const drifted = await snapshotRun(prisma, scoreRunId);
