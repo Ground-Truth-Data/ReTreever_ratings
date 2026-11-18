@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { pgliteDb, type TestDb } from "$parent/tests/pglite/pgliteDb";
 import { fieldPoints, scoreOneProject } from "./projectScore";
+import { pairsHash } from "./projectClusters";
 import { configHash, openScoreRun, ratingsTree, useScoreDb } from "./scoreDb";
 import { matrixHash, matrixPoints, METHODOLOGY_VERSION, SCORE_MATRIX } from "./scoreMatrix";
 import { score_orgs } from "./score_orgs";
@@ -44,6 +45,7 @@ describe("openScoreRun", () => {
 			methodologyVersion: METHODOLOGY_VERSION,
 			foundrRunId: null,
 			ledgerHash: null,
+			pairsHash: pairsHash([]),
 		});
 		expect(runs[0].ratingsSha).toMatch(/^[0-9a-f]{40}$/);
 		expect(await tableRows()).toEqual(gitRows);
@@ -67,6 +69,23 @@ describe("openScoreRun", () => {
 	});
 
 	// The orchestrator scores inside its run, so the row points at that run even when a later one has opened.
+	it("stamps the folded pairs: the same answers the same hash, a changed answer another", async () => {
+		const answer = (method: string, resolution: string, day: number) =>
+			t.prisma.linkCandidateTable.create({
+				data: { table: "ProjectTable", keyA: "a-1", keyB: "c-1", method, confidence: 0.9, foundBy: "test", resolution, resolvedAt: new Date(Date.UTC(2026, 10, day)) },
+			});
+		const stamp = async () => (await t.prisma.scoreRunTable.findUniqueOrThrow({ where: { scoreRunId: await openScoreRun(t.prisma) } })).pairsHash;
+		await answer("name-place", "sameAs", 10);
+		const first = await stamp();
+		expect(first).toBe(pairsHash([{ keyA: "a-1", keyB: "c-1", resolution: "sameAs" }]));
+		expect(await stamp()).toBe(first);
+		await answer("name-geo", "partOf:a-1", 11);
+		const second = await stamp();
+		expect(second).not.toBe(first);
+		await answer("name-desc", "rejected", 12);
+		expect(await stamp()).toBe(pairsHash([]));
+	});
+
 	it("names the Foundr run the process carries over the newest, and none when that run has no row", async () => {
 		const run = (runId: string, startedAt: string) =>
 			t.prisma.foundrRunTable.create({

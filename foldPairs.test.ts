@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { pgliteDb, type TestDb } from "$parent/tests/pglite/pgliteDb";
 import { scoreOneOrg } from "./orgScore";
-import { clustersOf } from "./projectClusters";
+import { clustersOf, pairsHash } from "./projectClusters";
 
 // The org scorer against Postgres with project pairs a person answered: a
 // planting listed twice inside one family counts once.
@@ -138,5 +138,15 @@ describe("clustersOf", () => {
 			{ keyA: "a", keyB: "z", resolution: "partOf:z" },
 		];
 		expect(clustersOf(["d", "b", "a"], pairs)).toEqual([["a", "b"], ["d"]]);
+	});
+});
+
+describe("pairsHash", () => {
+	it("is the same whatever order the pairs arrive in, and moves with any answer", () => {
+		const a = { keyA: "a-1", keyB: "c-1", resolution: "sameAs" };
+		const b = { keyA: "a-2", keyB: "b-2", resolution: "partOf:a-2" };
+		expect(pairsHash([a, b])).toBe(pairsHash([b, a]));
+		expect(pairsHash([a, b])).not.toBe(pairsHash([a, { ...b, resolution: "sameAs" }]));
+		expect(pairsHash([a])).not.toBe(pairsHash([]));
 	});
 });

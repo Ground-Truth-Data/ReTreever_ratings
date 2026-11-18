@@ -17,6 +17,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import pg from "pg";
 import { PrismaClient } from "$parent/prisma/generated/prisma-postgres/client.js";
 import { namePool } from "$parent/src/lib/server/runLock.js";
+import { foldPairs, pairsHash } from "./projectClusters.js";
 import { logicDriftLines, scoreLogicDrift } from "./scoreLogic.js";
 import { matrixHash, METHODOLOGY_VERSION, seedScoreMatrix } from "./scoreMatrix.js";
 
@@ -92,7 +93,8 @@ export async function warnLogicDrift(db: ScoreRunDb): Promise<void> {
  * score row the run writes. The Foundr run is the one the process carries
  * (`FOUNDR_RUN_ID`, set when the orchestrator scores inside its own run), else
  * the newest, whose upsert set the flags being scored; its per-site ledger
- * hashes, hashed together, are the ledgers behind those rows. Before it, the
+ * hashes, hashed together, are the ledgers behind those rows; the folded
+ * project pairs are hashed beside them. Before it, the
  * terminal is told which stored scores an older scorer wrote.
  */
 export async function openScoreRun(db: ScoreRunDb): Promise<string> {
@@ -114,6 +116,7 @@ export async function openScoreRun(db: ScoreRunDb): Promise<string> {
 			methodologyVersion: METHODOLOGY_VERSION,
 			foundrRunId: foundrRun?.runId ?? null,
 			ledgerHash,
+			pairsHash: pairsHash(await foldPairs(db)),
 		},
 		select: { scoreRunId: true },
 	});
