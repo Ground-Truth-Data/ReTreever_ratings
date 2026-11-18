@@ -310,7 +310,7 @@ describe("a run scores only the orgs the site serves", () => {
 	afterEach(() => vi.unstubAllEnvs());
 
 	for (const full of [false, true]) {
-		it(`a ${full ? "full" : "dirty"} run clears a live org the site does not serve, scores the served one, and leaves a deleted one alone`, async () => {
+		it(`a ${full ? "full" : "dirty"} run clears an org the site does not serve, a deleted one included, and scores the served one`, async () => {
 			await seedScopes();
 			const keys = (await t.prisma.projectTable.findMany({ where: { deletedAt: null }, select: { projectKey: true } })).map((p) => p.projectKey);
 			await score_projects(keys);
@@ -322,9 +322,9 @@ describe("a run scores only the orgs the site serves", () => {
 			expect(await orgRow("c-1")).toMatchObject({ ...NO_SCORE, scoreOrgFlag: false });
 			expect(await orgRow("o-1")).toMatchObject({ scoreOrgFlag: false, scoreRank: 1, primaryStakeholderCategory: "developer_ish" });
 			expect((await orgRow("o-1")).scoreOrgFinal).not.toBeNull();
-			// Soft-deleted: no run touches it, served or not.
-			expect(Number((await orgRow("d-1")).scoreOrgFinal)).toBe(0.4);
-			expect(await inputsOf("d-1")).toBe(1);
+			// A deleted org is never served, so a run clears the score it kept (Salam, 18 Nov 2026).
+			expect(await orgRow("d-1")).toMatchObject({ ...NO_SCORE, scoreOrgFlag: false });
+			expect(await inputsOf("d-1")).toBe(0);
 		});
 	}
 
@@ -346,7 +346,7 @@ describe("a run scores only the orgs the site serves", () => {
 	it("a second run clears nothing more", async () => {
 		await seedScopes();
 		const served = servedOrgWhere();
-		expect(await clearUnserved(t.prisma, served)).toBe(3);
+		expect(await clearUnserved(t.prisma, served)).toBe(4);
 		expect(await clearUnserved(t.prisma, served)).toBe(0);
 	});
 });

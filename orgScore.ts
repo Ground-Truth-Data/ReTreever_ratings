@@ -48,7 +48,7 @@ export function orgWhere(full: boolean, served: Prisma.OrganizationTableWhereInp
 }
 
 /**
- * Every live org the site does not serve carries no score: the nulls a child
+ * Every org the site does not serve, a soft-deleted one included, carries no score: the nulls a child
  * gets, its inputs deleted and its flag cleared, so a number never resurfaces
  * once an org stops being served. Set-based, one statement per table. Matched
  * by key against the served list, not by NOT(served): NOT over a NULL
@@ -61,12 +61,10 @@ export async function clearUnserved(db: Pick<PrismaClient, "organizationTable" |
 		DELETE FROM "OrgScoreInputTable" i
 		USING "OrganizationTable" o
 		WHERE o."organizationKey" = i."organizationKey"
-		  AND o."deletedAt" IS NULL
 		  AND NOT (o."organizationKey" = ANY(${keys}::text[]))
 	`;
 	const { count } = await db.organizationTable.updateMany({
 		where: {
-			deletedAt: null,
 			organizationKey: { notIn: keys },
 			OR: [...Object.keys(NO_SCORE).map((column) => ({ [column]: { not: null } }) as Prisma.OrganizationTableWhereInput), { scoreOrgFlag: true }],
 		},
