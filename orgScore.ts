@@ -380,7 +380,7 @@ export const ALL_GROUP = "all";
  * scoring at or below it (CUME_DIST, so tied orgs share one percentile and the
  * top org is 1) and its competition rank, 1 the best. Reviewed and unreviewed
  * orgs rank together: the cohort is a label, never a partition. An org with no
- * category ranks among the others with none. A group of fewer than `minGroup`
+ * category ranks among the others with none. A group of fewer than `MIN_CATEGORY_GROUP`
  * ranks among every ranked org instead, so no org is "1st of 1". Every other
  * row, soft-deleted, unserved or null, holds
  * neither. `served` is the site's own predicate, passed in so it is never
@@ -389,7 +389,6 @@ export const ALL_GROUP = "all";
 export async function rankOrgs(
 	db: Pick<PrismaClient, "organizationTable" | "$executeRaw">,
 	served: Prisma.OrganizationTableWhereInput,
-	minGroup: number = MIN_CATEGORY_GROUP,
 ): Promise<void> {
 	console.log("\n📊 Ranking organizations...");
 	const keys = (await db.organizationTable.findMany({ where: served, select: { organizationKey: true } })).map(
@@ -403,8 +402,8 @@ export async function rankOrgs(
 			FROM "OrganizationTable" o
 			LEFT JOIN (
 				SELECT "organizationKey",
-					CASE WHEN n < ${minGroup} THEN p_all ELSE p_cat END AS p,
-					CASE WHEN n < ${minGroup} THEN k_all ELSE k_cat END AS k
+					CASE WHEN n < ${MIN_CATEGORY_GROUP} THEN p_all ELSE p_cat END AS p,
+					CASE WHEN n < ${MIN_CATEGORY_GROUP} THEN k_all ELSE k_cat END AS k
 				FROM (
 					SELECT "organizationKey",
 						COUNT(*) OVER (PARTITION BY COALESCE("primaryStakeholderCategory", '')) AS n,

@@ -196,13 +196,6 @@ describe("an org is ranked among its category, reviewed and unreviewed together,
 		});
 	});
 
-	it("with the minimum at 1 every group ranks within itself, as RT 119 did", async () => {
-		await seedScored();
-		await rankOrgs(t.prisma, servedOrgWhere(), 1);
-		const r = await ranksOf();
-		expect([r["p-1"], r["p-2"], r["n-1"], r["d-2"]]).toEqual([[1, 1], [2, 0.75], [1, 1], [2, share(5, 6)]]);
-	});
-
 	it("--rank-only re-ranks and freezes today's scores as a completed run, each org's group beside its rank (\"all\" for a fallback), scoring nothing", async () => {
 		await seedScored();
 		const before = await t.prisma.organizationTable.findMany({ select: { organizationKey: true, scoreOrgFinal: true, scoreLastUpdatedAt: true }, orderBy: { organizationKey: "asc" } });
