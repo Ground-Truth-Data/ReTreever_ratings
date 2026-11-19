@@ -4,9 +4,10 @@ import { pgliteDb, type TestDb } from "$parent/tests/pglite/pgliteDb";
 import { fieldPoints, scoreOneProject } from "./projectScore";
 import { pairsHash } from "./projectClusters";
 import { configHash, openScoreRun, ratingsTree, useScoreDb } from "./scoreDb";
+import { rankOnlyOrgs, scoreAndRankOrgs } from "./score_orgs";
 import { matrixHash, matrixPoints, METHODOLOGY_VERSION, SCORE_MATRIX } from "./scoreMatrix";
 import { score_orgs } from "./score_orgs";
-import { score_projects } from "./score_projects";
+import { rank_projects, score_projects } from "./score_projects";
 
 // What a score run leaves behind on Postgres with ReTreever's real schema:
 // one run row, the weights table equal to git, and its id on every score row.
@@ -163,6 +164,108 @@ describe("a rescore is one run, stamped on what it wrote", () => {
 		const inputs = await t.prisma.orgScoreInputTable.findMany({ where: { organizationKey: "o-a-1" } });
 		expect(inputs).toHaveLength(1);
 		expect(inputs[0].scoreRunId).toBe(runs[1].scoreRunId);
+	});
+});
+
+const runRows = async () =>
+	(await t.prisma.scoreRunTable.findMany({ orderBy: [{ at: "asc" }, { scoreRunId: "asc" }] })).map((r) => ({
+		scoreRunId: r.scoreRunId,
+		finished: r.completedAt !== null,
+		reconciled: r.reconciled,
+	}));
+const projectRun = async (projectKey: string) => [...new Set((await fieldRows(projectKey)).map((r) => r.scoreRunId))];
+const snapshotRows = (scoreRunId: string) => t.prisma.scoreSnapshotTable.count({ where: { scoreRunId } });
+
+describe("the project scorer and the organisation scorer after it are one run", () => {
+	it("projects then organisations leave one row, finished and reconciled, that every score row names", async () => {
+		await seedProject("a-1");
+		await seedProject("a-2");
+		expect(await score_projects(["a-1", "a-2"])).toEqual([]);
+		await rank_projects();
+		expect(await runRows()).toMatchObject([{ finished: false, reconciled: null }]);
+
+		expect(await scoreAndRankOrgs()).toEqual([]);
+		const runs = await runRows();
+		expect(runs).toMatchObject([{ finished: true, reconciled: true }]);
+		const { scoreRunId } = runs[0];
+		expect(await projectRun("a-1")).toEqual([scoreRunId]);
+		expect(await projectRun("a-2")).toEqual([scoreRunId]);
+		const inputs = await t.prisma.orgScoreInputTable.findMany({ select: { scoreRunId: true } });
+		expect(inputs).toHaveLength(2);
+		expect(inputs.every((i) => i.scoreRunId === scoreRunId)).toBe(true);
+		// Two orgs and two projects, frozen under the row the project scorer opened.
+		expect(await snapshotRows(scoreRunId)).toBe(4);
+	});
+
+	it("a project run that died stays unfinished: its rerun opens a row of its own and the orgs join that one", async () => {
+		await seedProject("a-1");
+		await seedProject("a-2");
+		// Died after a-1: a-2 is still flagged, and nothing followed.
+		await score_projects(["a-1"]);
+		const [died] = await runRows();
+
+		await score_projects(["a-2"]);
+		await rank_projects();
+		expect(await scoreAndRankOrgs()).toEqual([]);
+		const runs = await runRows();
+		expect(runs).toMatchObject([
+			{ scoreRunId: died.scoreRunId, finished: false, reconciled: null },
+			{ finished: true, reconciled: true },
+		]);
+		// Each project still names the row that scored it.
+		expect(await projectRun("a-1")).toEqual([died.scoreRunId]);
+		expect(await projectRun("a-2")).toEqual([runs[1].scoreRunId]);
+		expect(await snapshotRows(died.scoreRunId)).toBe(0);
+	});
+
+	it("with no org dirty after the projects, the org step still completes their run", async () => {
+		await t.prisma.projectTable.create({ data: { projectKey: "a-1", projectName: "Alone", scoreProjectFlag: true } });
+		await score_projects(["a-1"]);
+		await rank_projects();
+		expect(await scoreAndRankOrgs()).toEqual([]);
+		const runs = await runRows();
+		expect(runs).toMatchObject([{ finished: true, reconciled: true }]);
+		expect(await snapshotRows(runs[0].scoreRunId)).toBe(1);
+
+		// Nothing scored and nothing left open: no run.
+		expect(await scoreAndRankOrgs()).toEqual([]);
+		expect(await runRows()).toHaveLength(1);
+	});
+
+	it("--rank-only after a project run completes that run", async () => {
+		await t.prisma.projectTable.create({ data: { projectKey: "a-1", projectName: "Alone", scoreProjectFlag: true } });
+		await score_projects(["a-1"]);
+		const [{ scoreRunId }] = await runRows();
+		expect(await rankOnlyOrgs()).toBe(scoreRunId);
+		expect(await runRows()).toMatchObject([{ scoreRunId, finished: true, reconciled: true }]);
+	});
+
+	it("inputs that moved since the project run are another run: the project row stays unfinished", async () => {
+		await seedProject("a-1");
+		await score_projects(["a-1"]);
+		await rank_projects();
+		await t.prisma.linkCandidateTable.create({
+			data: { table: "ProjectTable", keyA: "a-1", keyB: "c-1", method: "name-place", confidence: 0.9, foundBy: "test", resolution: "sameAs", resolvedAt: new Date() },
+		});
+		expect(await scoreAndRankOrgs()).toEqual([]);
+		expect(await runRows()).toMatchObject([
+			{ finished: false, reconciled: null },
+			{ finished: true, reconciled: true },
+		]);
+	});
+
+	it("a run an org was already scored under is never joined", async () => {
+		await seedProject("a-1");
+		await score_projects(["a-1"]);
+		await rank_projects();
+		// A named-org run: its own row, org rows stamped, no snapshot.
+		expect(await score_orgs(["o-a-1"])).toEqual([]);
+		expect(await scoreAndRankOrgs(true)).toEqual([]);
+		expect(await runRows()).toMatchObject([
+			{ finished: false, reconciled: null },
+			{ finished: false, reconciled: null },
+			{ finished: true, reconciled: true },
+		]);
 	});
 });
 

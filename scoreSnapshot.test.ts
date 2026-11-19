@@ -56,7 +56,7 @@ const snapshotOf = async (scoreRunId: string) =>
 	).map(({ scoreRunId: _, ...row }) => row);
 
 describe("a full run's snapshot", () => {
-	it("freezes every live org and project, reconciles each, and completes the org run", async () => {
+	it("freezes every live org and project, reconciles each, and completes the run the project scorer opened", async () => {
 		await seed();
 		const runId = await fullRun();
 		const rows = await snapshotOf(runId);
@@ -79,8 +79,8 @@ describe("a full run's snapshot", () => {
 		expect(run.completedAt).not.toBeNull();
 		expect(run.reconciled).toBe(true);
 		expect(run.publishedAt).toBeNull();
-		// The project run that came first froze nothing and never completes: only the org run can be published.
-		expect(await t.prisma.scoreRunTable.count({ where: { completedAt: null } })).toBe(1);
+		// The org run joined the project run that came first: one row, and it is the completed one.
+		expect(await t.prisma.scoreRunTable.count()).toBe(1);
 	});
 
 	it("is the same, byte for byte, when the same data is scored again", async () => {

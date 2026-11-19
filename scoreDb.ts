@@ -87,19 +87,12 @@ export async function warnLogicDrift(db: ScoreRunDb): Promise<void> {
 	}
 }
 
-/**
- * Starts a score run: the weights table is made equal to git, then one
- * ScoreRunTable row records what this run scores with. Its id goes on every
- * score row the run writes. The Foundr run is the one the process carries
- * (`FOUNDR_RUN_ID`, set when the orchestrator scores inside its own run), else
- * the newest, whose upsert set the flags being scored; its per-site ledger
- * hashes, hashed together, are the ledgers behind those rows; the folded
- * project pairs are hashed beside them. Before it, the
- * terminal is told which stored scores an older scorer wrote.
- */
-export async function openScoreRun(db: ScoreRunDb): Promise<string> {
-	await warnLogicDrift(db);
-	await seedScoreMatrix(db);
+/** What a run row says of the scorer and its inputs. The Foundr run is the one
+ * the process carries (`FOUNDR_RUN_ID`, set when the orchestrator scores inside
+ * its own run), else the newest, whose upsert set the flags being scored; its
+ * per-site ledger hashes, hashed together, are the ledgers behind those rows;
+ * the folded project pairs are hashed beside them. */
+async function runStamp(db: ScoreRunDb) {
 	const select = { runId: true, ledgerHashes: true };
 	const carried = process.env.FOUNDR_RUN_ID;
 	const foundrRun = carried
@@ -108,17 +101,51 @@ export async function openScoreRun(db: ScoreRunDb): Promise<string> {
 	const ledgerHash = foundrRun
 		? crypto.createHash("sha256").update(JSON.stringify(foundrRun.ledgerHashes)).digest("hex")
 		: null;
-	const { scoreRunId } = await db.scoreRunTable.create({
-		data: {
-			...ratingsTree(),
-			matrixHash: matrixHash(),
-			configHash: configHash(),
-			methodologyVersion: METHODOLOGY_VERSION,
-			foundrRunId: foundrRun?.runId ?? null,
-			ledgerHash,
-			pairsHash: pairsHash(await foldPairs(db)),
-		},
-		select: { scoreRunId: true },
-	});
+	return {
+		...ratingsTree(),
+		matrixHash: matrixHash(),
+		configHash: configHash(),
+		methodologyVersion: METHODOLOGY_VERSION,
+		foundrRunId: foundrRun?.runId ?? null,
+		ledgerHash,
+		pairsHash: pairsHash(await foldPairs(db)),
+	};
+}
+
+/**
+ * Starts a score run: the weights table is made equal to git, then one
+ * ScoreRunTable row records what this run scores with. Its id goes on every
+ * score row the run writes. Before it, the terminal is told which stored
+ * scores an older scorer wrote.
+ */
+export async function openScoreRun(db: ScoreRunDb): Promise<string> {
+	await warnLogicDrift(db);
+	await seedScoreMatrix(db);
+	const { scoreRunId } = await db.scoreRunTable.create({ data: await runStamp(db), select: { scoreRunId: true } });
 	return scoreRunId;
+}
+
+/**
+ * The run a project scorer left for the organisation scorer after it: the
+ * newest row, when it is unfinished, no org was scored under it, and it is
+ * stamped exactly as a row opened now would be. Null otherwise. Only the
+ * newest, so a project run that died is passed over once its rerun opens a row
+ * of its own, and stays unfinished.
+ */
+export async function projectRunToJoin(db: ScoreRunDb): Promise<string | null> {
+	const newest = await db.scoreRunTable.findFirst({ orderBy: [{ at: "desc" }, { scoreRunId: "desc" }] });
+	if (!newest || newest.completedAt) return null;
+	const stamp = await runStamp(db);
+	if ((Object.keys(stamp) as (keyof typeof stamp)[]).some((k) => newest[k] !== stamp[k])) return null;
+	const [{ orgs }] = await db.$queryRaw<{ orgs: boolean }[]>`
+		SELECT EXISTS (SELECT 1 FROM "OrgScoreInputTable" WHERE "scoreRunId" = ${newest.scoreRunId})
+			OR EXISTS (SELECT 1 FROM "ScoreClaimInputTable" WHERE "scoreRunId" = ${newest.scoreRunId}) AS orgs`;
+	return orgs ? null : newest.scoreRunId;
+}
+
+/** The organisation scorer's run: the project run just before it, so the
+ * projects and the orgs averaged from them are one row that one snapshot
+ * completes; a row of its own when there is none. */
+export async function joinScoreRun(db: ScoreRunDb): Promise<string> {
+	return (await projectRunToJoin(db)) ?? (await openScoreRun(db));
 }
