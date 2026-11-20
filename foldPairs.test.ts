@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { pgliteDb, type TestDb } from "$parent/tests/pglite/pgliteDb";
+import { seedCategories } from "./golden.fixture";
 import { scoreOneOrg } from "./orgScore";
 import { clustersOf } from "./projectClusters";
 
@@ -11,7 +12,10 @@ beforeAll(async () => {
 	t = await pgliteDb();
 });
 afterAll(() => t.close());
-beforeEach(() => t.reset());
+beforeEach(async () => {
+	await t.reset();
+	await seedCategories(t.prisma);
+});
 
 const at = (day: number) => new Date(Date.UTC(2026, 10, day, 12));
 

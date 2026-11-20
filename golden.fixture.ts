@@ -7,6 +7,12 @@ import config from "./scoreConfig.json" with { type: "json" };
 export const GOLDEN_ORGS = ["noClaim", "validated", "overClaim", "unvalidated", "restated", "nothing", "sponsor", "developer"] as const;
 export type GoldenOrg = (typeof GOLDEN_ORGS)[number];
 
+/** The lookup rows every stakeholder category in these fixtures keys into; a reset deletes them. */
+export const seedCategories = (db: PrismaClient) =>
+	db.stakeholderCategoryTable.createMany({
+		data: ["developer_ish", "producer_ish", "sponsor_ish", "nursery"].map((id) => ({ stakeholderCategoryId: id, stakeholderCategoryName: id })),
+	});
+
 export const GOLDEN_SERVED: Prisma.OrganizationTableWhereInput = { isParent: true, deletedAt: null };
 
 const SQUARE = { type: "Polygon", coordinates: [[[0, 0], [0.01, 0], [0.01, 0.01], [0, 0.01], [0, 0]]] };

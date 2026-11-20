@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { pgliteDb, type TestDb } from "$parent/tests/pglite/pgliteDb";
+import { seedCategories } from "./golden.fixture";
 import { fieldPoints, scoreOneProject } from "./projectScore";
 import { configHash, openScoreRun, ratingsTree, useScoreDb } from "./scoreDb";
 import { matrixHash, matrixPoints, METHODOLOGY_VERSION, SCORE_MATRIX } from "./scoreMatrix";
@@ -17,7 +18,10 @@ beforeAll(async () => {
 	vi.spyOn(console, "log").mockImplementation(() => {});
 });
 afterAll(() => t.close());
-beforeEach(() => t.reset());
+beforeEach(async () => {
+	await t.reset();
+	await seedCategories(t.prisma);
+});
 
 const gitRows = Object.entries(SCORE_MATRIX)
 	.map(([fieldName, { points, description }]) => ({ fieldName, pointsAvailable: points, description }))

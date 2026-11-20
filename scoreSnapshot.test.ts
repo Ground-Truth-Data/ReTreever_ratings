@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { pgliteDb, type TestDb } from "$parent/tests/pglite/pgliteDb";
-import { GOLDEN_ORGS, runGolden, seedGolden } from "./golden.fixture";
+import { GOLDEN_ORGS, runGolden, seedCategories, seedGolden } from "./golden.fixture";
 import { openScoreRun, useScoreDb } from "./scoreDb";
 import { matrixPoints } from "./scoreMatrix";
 import { servedOrgWhere } from "$parent/src/lib/core/servedOrgs";
@@ -20,7 +20,10 @@ beforeAll(async () => {
 	vi.spyOn(console, "log").mockImplementation(() => {});
 });
 afterAll(() => t.close());
-beforeEach(() => t.reset());
+beforeEach(async () => {
+	await t.reset();
+	await seedCategories(t.prisma);
+});
 
 async function seed() {
 	const db = t.prisma;
