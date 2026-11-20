@@ -198,8 +198,11 @@ describe("scoreLogicDrift", () => {
 describe("openScoreRun", () => {
 	it("opens its run whether or not the logic check can run", async () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		// The folded pairs are the run's own input, read outside the check.
+		const check = (sql: TemplateStringsArray, ...values: unknown[]) =>
+			sql.join("").includes("LinkCandidateTable") ? t.prisma.$queryRaw(sql, ...values) : Promise.reject(new Error("no raw queries here"));
 		const refusing = new Proxy(t.prisma, {
-			get: (db, key) => (key === "$queryRaw" ? () => Promise.reject(new Error("no raw queries here")) : Reflect.get(db, key)),
+			get: (db, key) => (key === "$queryRaw" ? check : Reflect.get(db, key)),
 		});
 		const scoreRunId = await openScoreRun(refusing);
 		expect(await t.prisma.scoreRunTable.count({ where: { scoreRunId } })).toBe(1);

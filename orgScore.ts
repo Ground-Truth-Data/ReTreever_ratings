@@ -1,4 +1,5 @@
 import type { Prisma, PrismaClient } from "$parent/prisma/generated/prisma-postgres/client.js";
+import { DEMO_NAME_LIKE } from "$parent/src/lib/core/servedOrgs.js";
 import { clustersOf, type FoldPair, foldPairs } from "./projectClusters.js";
 import config from "./scoreConfig.json" with { type: "json" };
 import { MAX_DEPTH, orgSubtree } from "./subtree.js";
@@ -48,7 +49,7 @@ export function orgWhere(full: boolean, served: Prisma.OrganizationTableWhereInp
 }
 
 /**
- * Every live org the site does not serve carries no score: the nulls a child
+ * Every org the site does not serve, a soft-deleted one included, carries no score: the nulls a child
  * gets, its inputs deleted and its flag cleared, so a number never resurfaces
  * once an org stops being served. Set-based, one statement per table. Matched
  * by key against the served list, not by NOT(served): NOT over a NULL
@@ -61,12 +62,10 @@ export async function clearUnserved(db: Pick<PrismaClient, "organizationTable" |
 		DELETE FROM "OrgScoreInputTable" i
 		USING "OrganizationTable" o
 		WHERE o."organizationKey" = i."organizationKey"
-		  AND o."deletedAt" IS NULL
 		  AND NOT (o."organizationKey" = ANY(${keys}::text[]))
 	`;
 	const { count } = await db.organizationTable.updateMany({
 		where: {
-			deletedAt: null,
 			organizationKey: { notIn: keys },
 			OR: [...Object.keys(NO_SCORE).map((column) => ({ [column]: { not: null } }) as Prisma.OrganizationTableWhereInput), { scoreOrgFlag: true }],
 		},
@@ -249,7 +248,7 @@ export async function scoreOneOrg(db: OrgScoreDb, organizationKey: string, score
 	// A parent scores over its subtree; a lone listing's subtree is itself.
 	const localOrgIds = await orgSubtree(db, organizationKey);
 
-	// Tier 4: every live project any org in the subtree is a stakeholder in,
+	// Tier 4: every live project not named a demo that any org in the subtree is a stakeholder in,
 	// once each however many rows point at it, with the subtree orgs that link
 	// it and its live plantings when the subtree holds an owning role on it.
 	const linked = await db.$queryRaw<LinkedProject[]>`
@@ -279,6 +278,7 @@ export async function scoreOneOrg(db: OrgScoreDb, organizationKey: string, score
                 ) AS owns
             ) o
             WHERE pt."deletedAt" IS NULL
+              AND NOT pt."projectName" ILIKE ANY(${DEMO_NAME_LIKE}::text[])
               AND pt."projectKey" IN (
                 SELECT st."projectKey"
                 FROM "StakeholderTable" st
@@ -380,7 +380,7 @@ export const ALL_GROUP = "all";
  * scoring at or below it (CUME_DIST, so tied orgs share one percentile and the
  * top org is 1) and its competition rank, 1 the best. Reviewed and unreviewed
  * orgs rank together: the cohort is a label, never a partition. An org with no
- * category ranks among the others with none. A group of fewer than `minGroup`
+ * category ranks among the others with none. A group of fewer than `MIN_CATEGORY_GROUP`
  * ranks among every ranked org instead, so no org is "1st of 1". Every other
  * row, soft-deleted, unserved or null, holds
  * neither. `served` is the site's own predicate, passed in so it is never
@@ -389,7 +389,6 @@ export const ALL_GROUP = "all";
 export async function rankOrgs(
 	db: Pick<PrismaClient, "organizationTable" | "$executeRaw">,
 	served: Prisma.OrganizationTableWhereInput,
-	minGroup: number = MIN_CATEGORY_GROUP,
 ): Promise<void> {
 	console.log("\n📊 Ranking organizations...");
 	const keys = (await db.organizationTable.findMany({ where: served, select: { organizationKey: true } })).map(
@@ -403,8 +402,8 @@ export async function rankOrgs(
 			FROM "OrganizationTable" o
 			LEFT JOIN (
 				SELECT "organizationKey",
-					CASE WHEN n < ${minGroup} THEN p_all ELSE p_cat END AS p,
-					CASE WHEN n < ${minGroup} THEN k_all ELSE k_cat END AS k
+					CASE WHEN n < ${MIN_CATEGORY_GROUP} THEN p_all ELSE p_cat END AS p,
+					CASE WHEN n < ${MIN_CATEGORY_GROUP} THEN k_all ELSE k_cat END AS k
 				FROM (
 					SELECT "organizationKey",
 						COUNT(*) OVER (PARTITION BY COALESCE("primaryStakeholderCategory", '')) AS n,

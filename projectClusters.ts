@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import type { PrismaClient } from "$parent/prisma/generated/prisma-postgres/client.js";
 
 /** A project pair whose latest human answer folds it: `sameAs` or `partOf:<wholeKey>`. */
@@ -19,6 +20,12 @@ export async function foldPairs(db: Pick<PrismaClient, "$queryRaw">): Promise<Fo
 		ORDER BY "keyA", "keyB", "resolvedAt" DESC, resolution
 	`;
 	return latest.filter((p) => folds(p.resolution));
+}
+
+/** sha256 of the folded pairs, sorted here: the query's order follows the database's collation. */
+export function pairsHash(pairs: FoldPair[]): string {
+	const rows = pairs.map((p) => [p.keyA, p.keyB, p.resolution]).sort((a, b) => (a.join("\0") < b.join("\0") ? -1 : 1));
+	return crypto.createHash("sha256").update(JSON.stringify(rows)).digest("hex");
 }
 
 /**

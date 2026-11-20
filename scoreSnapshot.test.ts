@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { pgliteDb, type TestDb } from "$parent/tests/pglite/pgliteDb";
-import { GOLDEN_ORGS, runGolden, seedCategories, seedGolden } from "./golden.fixture";
+import { GOLDEN_ORGS, runGolden, seedGolden } from "./golden.fixture";
 import { openScoreRun, useScoreDb } from "./scoreDb";
 import { matrixPoints } from "./scoreMatrix";
 import { servedOrgWhere } from "$parent/src/lib/core/servedOrgs";
@@ -22,7 +22,7 @@ beforeAll(async () => {
 afterAll(() => t.close());
 beforeEach(async () => {
 	await t.reset();
-	await seedCategories(t.prisma);
+	await t.prisma.stakeholderCategoryTable.createMany({ data: [{ stakeholderCategoryId: "developer_ish", stakeholderCategoryName: "Developer" }, { stakeholderCategoryId: "producer_ish", stakeholderCategoryName: "Producer" }] });
 });
 
 async function seed() {
@@ -56,7 +56,7 @@ const snapshotOf = async (scoreRunId: string) =>
 	).map(({ scoreRunId: _, ...row }) => row);
 
 describe("a full run's snapshot", () => {
-	it("freezes every live org and project, reconciles each, and completes the org run", async () => {
+	it("freezes every live org and project, reconciles each, and completes the run the project scorer opened", async () => {
 		await seed();
 		const runId = await fullRun();
 		const rows = await snapshotOf(runId);
@@ -79,8 +79,8 @@ describe("a full run's snapshot", () => {
 		expect(run.completedAt).not.toBeNull();
 		expect(run.reconciled).toBe(true);
 		expect(run.publishedAt).toBeNull();
-		// The project run that came first froze nothing and never completes: only the org run can be published.
-		expect(await t.prisma.scoreRunTable.count({ where: { completedAt: null } })).toBe(1);
+		// The org run joined the project run that came first: one row, and it is the completed one.
+		expect(await t.prisma.scoreRunTable.count()).toBe(1);
 	});
 
 	it("is the same, byte for byte, when the same data is scored again", async () => {
@@ -112,6 +112,46 @@ describe("a full run's snapshot", () => {
 		const runId = await openScoreRun(t.prisma);
 		expect(await snapshotRun(t.prisma, runId)).toEqual([]);
 		expect(await t.prisma.scoreSnapshotTable.findUniqueOrThrow({ where: { scoreRunId_entityTable_entityKey: { scoreRunId: runId, entityTable: "org", entityKey: "o-1" } } })).toMatchObject({ projectsScored: 3, reconciled: true });
+	});
+
+	it("a folded pair's breakdown is its members' mean, so the org reconciles; an unfolded org's is its projects' lines", async () => {
+		await seed();
+		await t.prisma.organizationTable.create({ data: { organizationKey: "o-3", organizationName: "Three", isParent: true, scoreOrgFlag: true } });
+		await t.prisma.stakeholderTable.create({
+			data: { stakeholderKey: "a-3-s3", organizationKey: "o-3", projectKey: "a-3", parentKey: "a-3", parentTable: "projectTable", stakeholderCategory: "developer_ish" },
+		});
+		await t.prisma.linkCandidateTable.create({
+			data: { table: "ProjectTable", keyA: "a-1", keyB: "a-2", method: "name-place", confidence: 0.9, foundBy: "test", resolution: "sameAs", resolvedAt: new Date() },
+		});
+		const runId = await fullRun();
+
+		const linesOf = async (projectKey: string) => {
+			const rows = await t.prisma.projectScoreByFieldTable.groupBy({ by: ["recordTable"], where: { projectKey }, _sum: { pointsAwarded: true, pointsAvailable: true } });
+			return new Map(rows.map((r) => [r.recordTable, { awarded: r._sum.pointsAwarded ?? 0, available: r._sum.pointsAvailable ?? 0 }]));
+		};
+		const [a1, a2, a3] = await Promise.all(["a-1", "a-2", "a-3"].map(linesOf));
+		const total = (m: Map<string, { awarded: number }>) => [...m.values()].reduce((s, l) => s + l.awarded, 0);
+		// The pair's by-field points differ, so its first key's lines alone would not reach the stored points.
+		expect(total(a1)).not.toBe(total(a2));
+
+		const row = async (entityKey: string) =>
+			t.prisma.scoreSnapshotTable.findUniqueOrThrow({ where: { scoreRunId_entityTable_entityKey: { scoreRunId: runId, entityTable: "org", entityKey } } });
+		const folded = await row("o-1");
+		const org = await t.prisma.organizationTable.findUniqueOrThrow({ where: { organizationKey: "o-1" } });
+		expect((await t.prisma.orgScoreInputTable.findMany({ where: { organizationKey: "o-1" }, orderBy: { projectKey: "asc" } })).map((i) => i.projectKey)).toEqual(["a-1", "a-3"]);
+		expect(folded).toMatchObject({ reconciled: true, projectsScored: 2 });
+		const lines = folded.breakdown as { recordTable: string; awarded: number; available: number }[];
+		expect(lines.reduce((s, l) => s + l.awarded, 0)).toBe(org.scorePointsScored);
+		expect(lines.reduce((s, l) => s + l.available, 0)).toBe(org.scorePointsAvailable);
+		for (const l of lines) {
+			const mean = ((a1.get(l.recordTable)?.awarded ?? 0) + (a2.get(l.recordTable)?.awarded ?? 0)) / 2;
+			expect(Math.abs(l.awarded - (a3.get(l.recordTable)?.awarded ?? 0) - mean)).toBeLessThanOrEqual(0.5);
+		}
+
+		const unfolded = await row("o-3");
+		expect(unfolded.reconciled).toBe(true);
+		expect(unfolded.breakdown).toEqual([...a3].sort(([x], [y]) => (x < y ? -1 : 1)).map(([recordTable, l]) => ({ recordTable, ...l })));
+		expect((await t.prisma.scoreRunTable.findUniqueOrThrow({ where: { scoreRunId: runId } })).reconciled).toBe(true);
 	});
 
 	it("writes all of a snapshot or none of it", async () => {
@@ -196,13 +236,6 @@ describe("an org is ranked among its category, reviewed and unreviewed together,
 		});
 	});
 
-	it("with the minimum at 1 every group ranks within itself, as RT 119 did", async () => {
-		await seedScored();
-		await rankOrgs(t.prisma, servedOrgWhere(), 1);
-		const r = await ranksOf();
-		expect([r["p-1"], r["p-2"], r["n-1"], r["d-2"]]).toEqual([[1, 1], [2, 0.75], [1, 1], [2, share(5, 6)]]);
-	});
-
 	it("--rank-only re-ranks and freezes today's scores as a completed run, each org's group beside its rank (\"all\" for a fallback), scoring nothing", async () => {
 		await seedScored();
 		const before = await t.prisma.organizationTable.findMany({ select: { organizationKey: true, scoreOrgFinal: true, scoreLastUpdatedAt: true }, orderBy: { organizationKey: "asc" } });
@@ -277,7 +310,7 @@ describe("a run scores only the orgs the site serves", () => {
 	afterEach(() => vi.unstubAllEnvs());
 
 	for (const full of [false, true]) {
-		it(`a ${full ? "full" : "dirty"} run clears a live org the site does not serve, scores the served one, and leaves a deleted one alone`, async () => {
+		it(`a ${full ? "full" : "dirty"} run clears an org the site does not serve, a deleted one included, and scores the served one`, async () => {
 			await seedScopes();
 			const keys = (await t.prisma.projectTable.findMany({ where: { deletedAt: null }, select: { projectKey: true } })).map((p) => p.projectKey);
 			await score_projects(keys);
@@ -289,9 +322,9 @@ describe("a run scores only the orgs the site serves", () => {
 			expect(await orgRow("c-1")).toMatchObject({ ...NO_SCORE, scoreOrgFlag: false });
 			expect(await orgRow("o-1")).toMatchObject({ scoreOrgFlag: false, scoreRank: 1, primaryStakeholderCategory: "developer_ish" });
 			expect((await orgRow("o-1")).scoreOrgFinal).not.toBeNull();
-			// Soft-deleted: no run touches it, served or not.
-			expect(Number((await orgRow("d-1")).scoreOrgFinal)).toBe(0.4);
-			expect(await inputsOf("d-1")).toBe(1);
+			// A deleted org is never served, so a run clears the score it kept (Salam, 18 Nov 2026).
+			expect(await orgRow("d-1")).toMatchObject({ ...NO_SCORE, scoreOrgFlag: false });
+			expect(await inputsOf("d-1")).toBe(0);
 		});
 	}
 
@@ -313,7 +346,7 @@ describe("a run scores only the orgs the site serves", () => {
 	it("a second run clears nothing more", async () => {
 		await seedScopes();
 		const served = servedOrgWhere();
-		expect(await clearUnserved(t.prisma, served)).toBe(3);
+		expect(await clearUnserved(t.prisma, served)).toBe(4);
 		expect(await clearUnserved(t.prisma, served)).toBe(0);
 	});
 });

@@ -7,12 +7,6 @@ import config from "./scoreConfig.json" with { type: "json" };
 export const GOLDEN_ORGS = ["noClaim", "validated", "overClaim", "unvalidated", "restated", "nothing", "sponsor", "developer"] as const;
 export type GoldenOrg = (typeof GOLDEN_ORGS)[number];
 
-/** The lookup rows every stakeholder category in these fixtures keys into; a reset deletes them. */
-export const seedCategories = (db: PrismaClient) =>
-	db.stakeholderCategoryTable.createMany({
-		data: ["developer_ish", "producer_ish", "sponsor_ish", "nursery"].map((id) => ({ stakeholderCategoryId: id, stakeholderCategoryName: id })),
-	});
-
 export const GOLDEN_SERVED: Prisma.OrganizationTableWhereInput = { isParent: true, deletedAt: null };
 
 const SQUARE = { type: "Polygon", coordinates: [[[0, 0], [0.01, 0], [0.01, 0.01], [0, 0.01], [0, 0]]] };
@@ -65,6 +59,10 @@ const CLAIMS: Partial<Record<GoldenOrg, Claim[]>> = {
 async function seedProject(db: PrismaClient, name: string, site: Site, stakeholders: [organizationKey: string, role: string][]): Promise<void> {
 	const projectKey = `p-${name}`;
 	await db.projectTable.create({ data: { projectKey, projectName: `${name} mangroves` } });
+	await db.stakeholderCategoryTable.createMany({
+		data: stakeholders.map(([, id]) => ({ stakeholderCategoryId: id, stakeholderCategoryName: id })),
+		skipDuplicates: true,
+	});
 	for (const [organizationKey, stakeholderCategory] of stakeholders)
 		await db.stakeholderTable.create({
 			data: { stakeholderKey: `s-${organizationKey}`, organizationKey, projectKey, parentKey: projectKey, parentTable: "projectTable", stakeholderCategory },

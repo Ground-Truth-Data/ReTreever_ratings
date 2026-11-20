@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { pgliteDb, type TestDb } from "$parent/tests/pglite/pgliteDb";
-import { GOLDEN_ORGS, type GoldenOrg, type GoldenOutcome, runGolden, seedCategories, seedGolden } from "./golden.fixture";
+import { GOLDEN_ORGS, type GoldenOrg, type GoldenOutcome, runGolden, seedGolden } from "./golden.fixture";
 import { matrixPoints } from "./scoreMatrix";
 
 // The method's outcomes, pinned: eight orgs scored from seeded records with the
@@ -14,7 +14,6 @@ beforeAll(async () => {
 afterAll(() => t.close());
 beforeEach(async () => {
 	await t.reset();
-	await seedCategories(t.prisma);
 	vi.spyOn(console, "log").mockImplementation(() => {});
 	await seedGolden(t.prisma);
 });

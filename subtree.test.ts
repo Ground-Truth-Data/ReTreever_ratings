@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { PUBLIC_ORG_KEY } from "$parent/src/lib/core/servedOrgs";
 import { MAX_DEPTH, orgSubtree, walkDown } from "./subtree";
 
 // parent → children, in memory; the walk asks for a whole level at once.
@@ -54,9 +55,9 @@ function stubTable<K extends string>(
 	const wheres: Record<string, unknown>[] = [];
 	return {
 		wheres,
-		findMany: async (args: { where: Record<string, { in: string[] }> }) => {
+		findMany: async (args: { where: { AND: [Record<string, { in: string[] }>, unknown] } }) => {
 			wheres.push(args.where);
-			return args.where[parentField].in.flatMap((p) =>
+			return args.where.AND[0][parentField].in.flatMap((p) =>
 				(edges[p] ?? []).map((k) => ({ [keyField]: k })),
 			);
 		},
@@ -64,7 +65,7 @@ function stubTable<K extends string>(
 }
 
 describe("orgSubtree", () => {
-	it("asks for the live children of the whole frontier at once", async () => {
+	it("asks for the live, public children of the whole frontier at once", async () => {
 		const t = stubTable("organizationKey", "organizationParentKey", {
 			p: ["a", "b"],
 			a: ["a1"],
@@ -72,10 +73,8 @@ describe("orgSubtree", () => {
 		const keys = await orgSubtree({ organizationTable: t } as never, "p");
 
 		expect(keys).toEqual(["p", "a", "b", "a1"]);
-		expect(t.wheres).toEqual([
-			{ organizationParentKey: { in: ["p"] }, deletedAt: null },
-			{ organizationParentKey: { in: ["a", "b"] }, deletedAt: null },
-			{ organizationParentKey: { in: ["a1"] }, deletedAt: null },
-		]);
+		expect(t.wheres).toEqual(
+			[["p"], ["a", "b"], ["a1"]].map((level) => ({ AND: [{ organizationParentKey: { in: level }, deletedAt: null }, PUBLIC_ORG_KEY] })),
+		);
 	});
 });

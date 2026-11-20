@@ -1,6 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { pgliteDb, type TestDb } from "$parent/tests/pglite/pgliteDb";
-import { seedCategories } from "./golden.fixture";
 import { scoreOneOrg } from "./orgScore";
 import { fieldPoints, RECORD_KEY, scoreOneProject } from "./projectScore";
 import { withRetry } from "./scoreRun";
@@ -15,7 +14,7 @@ beforeAll(async () => {
 afterAll(() => t.close());
 beforeEach(async () => {
 	await t.reset();
-	await seedCategories(t.prisma);
+	await t.prisma.stakeholderCategoryTable.createMany({ data: [{ stakeholderCategoryId: "developer_ish", stakeholderCategoryName: "Developer" }] });
 });
 
 const points = fieldPoints(new Map([["geometry", 20]]), 1);

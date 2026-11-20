@@ -10,7 +10,7 @@ import { servedOrgWhere } from "$parent/src/lib/core/servedOrgs.js";
 import { takeRunLock } from "$parent/src/lib/server/runLock.js";
 import { scoreInBatches, withRetry } from "./scoreRun.js";
 import { snapshotRun } from "./scoreSnapshot.js";
-import { closeScoreDb, openScoreRun, scoreConfig as config, scoreDb } from "./scoreDb.js";
+import { closeScoreDb, joinScoreRun, openScoreRun, projectRunToJoin, scoreConfig as config, scoreDb } from "./scoreDb.js";
 
 /** Returns the organizationKeys that failed even after retries — never throws
  * for one org. A call with no run is a run of its own; scoreAndRankOrgs opens
@@ -34,6 +34,15 @@ export async function score_orgs(
 				take: batchSize,
 				orderBy: { scoreLastUpdatedAt: "asc" },
 			});
+	if (orgIds) {
+		const found = new Set(orgsToScore.map((o) => o.organizationKey));
+		const skipped = orgIds.filter((k) => !found.has(k));
+		if (skipped.length > 0) {
+			console.warn(
+				`\n⚠️  Skipping ${skipped.length} named organization(s): not served by the site, deleted, or not flagged dirty${full ? "" : " (--full scores a clean one)"}:\n  ${skipped.join("\n  ")}`,
+			);
+		}
+	}
 
 	console.log(`\n🏢 Scoring ${orgsToScore.length} dirty organizations...`);
 
@@ -58,7 +67,9 @@ export async function score_orgs(
 /** The org run `npm run score` and Foundr's orchestrator share: a dirty child
  * dirties its parent, every org the site does not serve is cleared, the dirty
  * served rows (every served row with `full`) are scored in batches, then the
- * served orgs are re-ranked. Returns the keys that failed. */
+ * served orgs are re-ranked. Its run is the project run just before it when
+ * there is one (`joinScoreRun`), and the snapshot completes it. Returns the
+ * keys that failed. */
 export async function scoreAndRankOrgs(
 	full = false,
 	batchSize: number = config.batch.organizations.defaultSize,
@@ -100,7 +111,7 @@ export async function scoreAndRankOrgs(
 		`\n📋 Found ${totalToScore} organization${full ? "" : " dirty"} to score`,
 	);
 
-	// Opened by the first batch with keys, so a run that scores nothing records no run.
+	// Taken by the first batch with keys, so a run that scores nothing records no run.
 	let scoreRunId: string | undefined;
 	const { failed } = await scoreInBatches(
 		full ? "organizations" : "dirty organizations",
@@ -116,7 +127,7 @@ export async function scoreAndRankOrgs(
 							orderBy: { scoreLastUpdatedAt: "asc" },
 						})
 					).map((o) => o.organizationKey),
-		async (keys) => score_orgs(keys, batchSize, full, (scoreRunId ??= await openScoreRun(prisma))),
+		async (keys) => score_orgs(keys, batchSize, full, (scoreRunId ??= await joinScoreRun(prisma))),
 	);
 	if (failed.length > 0 && full) {
 		console.warn(
@@ -125,6 +136,8 @@ export async function scoreAndRankOrgs(
 	}
 
 	await rankOrgs(prisma, served);
+	// No org was dirty, yet projects were just scored: their run is completed here, or nothing ever would.
+	scoreRunId ??= (await projectRunToJoin(prisma)) ?? undefined;
 	// A run with a failed org left it on its old score: not a whole run, so never completed or publishable.
 	if (scoreRunId && failed.length === 0) {
 		const drifted = await snapshotRun(prisma, scoreRunId);
@@ -134,10 +147,10 @@ export async function scoreAndRankOrgs(
 }
 
 /** A run that scores nothing: today's scores re-ranked and frozen as a run of
- * their own, in minutes where a full org run takes hours. Refuses while a
+ * their own (or of the project run just before it), in minutes where a full org run takes hours. Refuses while a
  * served org is dirty, so it never freezes a score its inputs have moved past;
- * a dirty child dirties its parent first, as a scoring run would. Returns the
- * run's id. */
+ * a dirty child dirties its parent first and the unserved are cleared, as a
+ * scoring run would. Returns the run's id. */
 export async function rankOnlyOrgs(): Promise<string> {
 	const prisma = scoreDb();
 	await propagateDirtyToParents(prisma);
@@ -145,7 +158,9 @@ export async function rankOnlyOrgs(): Promise<string> {
 	if (dirty > 0) {
 		throw new Error(`--rank-only refused: ${dirty} served organization(s) are flagged dirty. Score them first: gitEr/CLI.sh score orgs`);
 	}
-	const scoreRunId = await openScoreRun(prisma);
+	const cleared = await clearUnserved(prisma, servedOrgWhere());
+	if (cleared > 0) console.log(`\n🧹 ${cleared} organization(s) the site does not serve cleared of their scores`);
+	const scoreRunId = await joinScoreRun(prisma);
 	await rankOrgs(prisma, servedOrgWhere());
 	const drifted = await snapshotRun(prisma, scoreRunId);
 	console.log(`\n📸 Rank-only run ${scoreRunId} written${drifted.length ? `; ${drifted.length} rows do not reconcile:\n  ${drifted.join("\n  ")}` : ", every row reconciles"}`);
