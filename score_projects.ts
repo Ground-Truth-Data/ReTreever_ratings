@@ -68,7 +68,7 @@ export async function rank_projects(): Promise<void> {
         FROM (
             SELECT
                 "projectKey",
-                ROUND(PERCENT_RANK() OVER (ORDER BY "scoreProject") * 100)::int AS "scoreProjectRank"
+                ROUND(CUME_DIST() OVER (ORDER BY "scoreProject") * 100)::int AS "scoreProjectRank"
             FROM "ProjectTable"
             WHERE "scoreProject" IS NOT NULL
               AND "deletedAt" IS NULL

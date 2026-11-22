@@ -202,7 +202,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 					`\n⚠️  ${failed.length} organization(s) failed after retries:\n  ${failed.join("\n  ")}`,
 				);
 			}
-			await rankOrgs(prisma, servedOrgWhere());
+			// No re-rank: ranks move only in a run that snapshots them, so the admin's rank and its of-N always agree.
 		} else {
 			await scoreAndRankOrgs(full, batchSize);
 		}

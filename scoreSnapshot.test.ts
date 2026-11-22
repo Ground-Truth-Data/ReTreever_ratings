@@ -69,6 +69,9 @@ describe("a full run's snapshot", () => {
 		const ranks = rows.filter((r) => r.entityTable === "project").sort((a, b) => Number(b.score) - Number(a.score)).map((r) => r.rank);
 		expect(ranks[0]).toBe(1);
 		expect(ranks).toEqual([...ranks].sort((a, b) => (a ?? 0) - (b ?? 0)));
+		// One definition with orgs: the share scoring at or below, so the best is 100 and the worst is never 0.
+		const pct = (await t.prisma.projectTable.findMany({ where: { scoreProjectRank: { not: null } }, orderBy: { scoreProject: "asc" } })).map((p) => p.scoreProjectRank);
+		expect([pct[0]! > 0, pct.at(-1)]).toEqual([true, 100]);
 		const lines = rows[2].breakdown as { recordTable: string; awarded: number }[];
 		expect(lines.reduce((s, l) => s + l.awarded, 0)).toBe(project.scorePointsScored);
 
