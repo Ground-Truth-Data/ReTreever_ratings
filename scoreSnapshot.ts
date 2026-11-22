@@ -1,8 +1,8 @@
 import type { PrismaClient } from "$parent/prisma/generated/prisma-postgres/client.js";
 import { ALL_GROUP, MIN_CATEGORY_GROUP } from "./orgScore.js";
-import { clustersOf, foldPairs } from "./projectClusters.js";
+import { clustersOf, runPairs } from "./projectClusters.js";
 
-export type SnapshotDb = Pick<PrismaClient, "$transaction" | "$executeRaw" | "$executeRawUnsafe" | "$queryRaw" | "scoreSnapshotTable">;
+export type SnapshotDb = Pick<PrismaClient, "$transaction" | "$executeRaw" | "$executeRawUnsafe" | "$queryRaw" | "scoreSnapshotTable" | "scoreRunTable">;
 
 /** One recordTable's by-field points summed, as the public tally groups them. */
 export type BreakdownLine = { recordTable: string; awarded: number; available: number };
@@ -85,7 +85,7 @@ const breakdownOf = (lines: string) => `
  * not reconcile.
  */
 export async function snapshotRun(db: SnapshotDb, scoreRunId: string): Promise<string[]> {
-	const pairs = await foldPairs(db);
+	const pairs = await runPairs(db, scoreRunId);
 	const components = clustersOf(pairs.flatMap((p) => [p.keyA, p.keyB]), pairs);
 	const compKeys = components.flat();
 	const compRoots = components.flatMap((c) => c.map(() => c[0]));

@@ -28,6 +28,14 @@ export function pairsHash(pairs: FoldPair[]): string {
 	return crypto.createHash("sha256").update(JSON.stringify(rows)).digest("hex");
 }
 
+/** The folded pairs a run is stamped with; a pair answered since then would score rows the stamp does not name. */
+export async function runPairs(db: Pick<PrismaClient, "$queryRaw" | "scoreRunTable">, scoreRunId: string): Promise<FoldPair[]> {
+	const pairs = await foldPairs(db);
+	const { pairsHash: stamped } = await db.scoreRunTable.findUniqueOrThrow({ where: { scoreRunId }, select: { pairsHash: true } });
+	if (pairsHash(pairs) !== stamped) throw new Error(`Run ${scoreRunId}: a project pair was answered after it opened. Score again: gitEr/CLI.sh score`);
+	return pairs;
+}
+
 /**
  * The keys grouped into clusters by the folded pairs (union-find, so a chain
  * A–B–C is one cluster even when B is outside `keys`), each sorted, members

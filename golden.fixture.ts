@@ -1,5 +1,6 @@
 import type { Prisma, PrismaClient } from "$parent/prisma/generated/prisma-postgres/client.js";
 import { rankOrgs, scoreOneOrg } from "./orgScore.js";
+import { foldPairs, pairsHash } from "./projectClusters.js";
 import { fieldPoints, scoreOneProject } from "./projectScore.js";
 import config from "./scoreConfig.json" with { type: "json" };
 
@@ -134,7 +135,7 @@ export async function runGolden(
 ): Promise<Record<GoldenOrg, GoldenOutcome>> {
 	const points = fieldPoints(matrix, config.defaults.fieldPoints);
 	await db.scoreRunTable.create({
-		data: { scoreRunId, ratingsSha: "golden", dirty: false, matrixHash: "golden", configHash: "golden", methodologyVersion: "golden" },
+		data: { scoreRunId, ratingsSha: "golden", dirty: false, matrixHash: "golden", configHash: "golden", methodologyVersion: "golden", pairsHash: pairsHash(await foldPairs(db)) },
 	});
 	for (const { projectKey } of await db.projectTable.findMany({ select: { projectKey: true }, orderBy: { projectKey: "asc" } }))
 		await scoreOneProject(db, projectKey, points, scoreRunId);

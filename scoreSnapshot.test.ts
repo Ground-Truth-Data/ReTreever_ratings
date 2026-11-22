@@ -117,6 +117,16 @@ describe("a full run's snapshot", () => {
 		expect(await t.prisma.scoreSnapshotTable.findUniqueOrThrow({ where: { scoreRunId_entityTable_entityKey: { scoreRunId: runId, entityTable: "org", entityKey: "o-1" } } })).toMatchObject({ projectsScored: 3, reconciled: true });
 	});
 
+	it("refuses a run whose pairs were answered after its stamp, so no row folds with pairs the stamp does not name", async () => {
+		await seed();
+		await fullRun();
+		const runId = await openScoreRun(t.prisma);
+		await t.prisma.linkCandidateTable.create({
+			data: { table: "ProjectTable", keyA: "a-1", keyB: "a-2", method: "name-place", confidence: 0.9, foundBy: "test", resolution: "sameAs", resolvedAt: new Date() },
+		});
+		await expect(snapshotRun(t.prisma, runId)).rejects.toThrow(/answered/);
+	});
+
 	it("a folded pair's breakdown is its members' mean, so the org reconciles; an unfolded org's is its projects' lines", async () => {
 		await seed();
 		await t.prisma.organizationTable.create({ data: { organizationKey: "o-3", organizationName: "Three", isParent: true, scoreOrgFlag: true } });
