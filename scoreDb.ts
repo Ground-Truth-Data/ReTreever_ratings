@@ -127,7 +127,7 @@ export async function openScoreRun(db: ScoreRunDb): Promise<string> {
 
 /**
  * The run a project scorer left for the organisation scorer after it: the
- * newest row, when it is unfinished, no org was scored under it, and it is
+ * newest row, when it is unfinished, no org was scored under it, no project is still dirty, and it is
  * stamped exactly as a row opened now would be. Null otherwise. Only the
  * newest, so a project run that died is passed over once its rerun opens a row
  * of its own, and stays unfinished.
@@ -137,10 +137,12 @@ export async function projectRunToJoin(db: ScoreRunDb): Promise<string | null> {
 	if (!newest || newest.completedAt) return null;
 	const stamp = await runStamp(db);
 	if ((Object.keys(stamp) as (keyof typeof stamp)[]).some((k) => newest[k] !== stamp[k])) return null;
-	const [{ orgs }] = await db.$queryRaw<{ orgs: boolean }[]>`
+	// A project still flagged dirty means the project run died before it finished: joining would hide that.
+	const [{ closed }] = await db.$queryRaw<{ closed: boolean }[]>`
 		SELECT EXISTS (SELECT 1 FROM "OrgScoreInputTable" WHERE "scoreRunId" = ${newest.scoreRunId})
-			OR EXISTS (SELECT 1 FROM "ScoreClaimInputTable" WHERE "scoreRunId" = ${newest.scoreRunId}) AS orgs`;
-	return orgs ? null : newest.scoreRunId;
+			OR EXISTS (SELECT 1 FROM "ScoreClaimInputTable" WHERE "scoreRunId" = ${newest.scoreRunId})
+			OR EXISTS (SELECT 1 FROM "ProjectTable" WHERE "scoreProjectFlag" AND "deletedAt" IS NULL) AS closed`;
+	return closed ? null : newest.scoreRunId;
 }
 
 /** The organisation scorer's run: the project run just before it, so the

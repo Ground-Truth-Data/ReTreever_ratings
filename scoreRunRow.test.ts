@@ -218,6 +218,18 @@ describe("the project scorer and the organisation scorer after it are one run", 
 		expect(await snapshotRows(died.scoreRunId)).toBe(0);
 	});
 
+	it("a project run that died is never joined by the org step straight after it, so the death stays on its row", async () => {
+		await seedProject("a-1");
+		await seedProject("a-2");
+		await score_projects(["a-1"]);
+		const [died] = await runRows();
+
+		expect(await scoreAndRankOrgs()).toEqual([]);
+		const runs = await runRows();
+		expect(runs[0]).toMatchObject({ scoreRunId: died.scoreRunId, finished: false, reconciled: null });
+		expect(runs.slice(1)).toMatchObject([{ finished: true }]);
+	});
+
 	it("with no org dirty after the projects, the org step still completes their run", async () => {
 		await t.prisma.projectTable.create({ data: { projectKey: "a-1", projectName: "Alone", scoreProjectFlag: true } });
 		await score_projects(["a-1"]);
