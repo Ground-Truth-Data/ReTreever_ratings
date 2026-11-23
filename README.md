@@ -53,9 +53,44 @@ weights that made it.
 
 ### A project's score
 
-Every field of every record a project published is checked: is it filled? A
-filled field earns its points; the score is the points earned over the points
-available, from 0 to 1.
+A project is scored on everything it could have disclosed. Each table below
+lists the fields one record offers (`OFFERED`, `projectScore.ts`). Every field
+of every record the project has is checked: is it filled? A filled field earns
+its points; the score is the points earned over the points offered, from 0 to 1.
+
+**A table with no record still offers one record's worth, and earns none of
+it.** A project that published no planting record scores 0 of 16 there; it is
+not left out of the sum. So every project is offered at least 126 points, and
+missing data costs points.
+
+### What a project is offered
+
+| Table | Fields | Points for one record |
+|---|---|---|
+| `ProjectTable` | 5 | 5 |
+| `LandTable` | 6 | 14 |
+| `PolygonTable` | 6 | 25 |
+| `CropTable` | 6 | 14 |
+| `SpeciesTable` | 5 | 5 |
+| `PlantingTable` | 8 | 16 |
+| `MiscTable` | 14 | 14 |
+| `StakeholderTable` | 1 | 2 |
+| `OrganizationTable` | 9 | 9 |
+| `ClaimTable` | 4 | 4 |
+| `SurveyTable` | 4 | 12 |
+
+A test holds this table equal to `OFFERED` and the weights.
+
+- **Organizations and claims are scored with the project.** Each organization
+  a live stakeholder names is scored once, however many of the project's
+  stakeholders name it. Each of those organizations' current claims is scored
+  once: the same claims the disclosure ratio reads (below), on what the claim
+  states (its quantity, hectares, sites and date).
+- **A species** is scored once per species the project's crops are linked to.
+- **Only what a platform or the organization disclosed is offered.** A column
+  ReTreever fills is never a field: a key, a timestamp, a coordinate geocoded
+  from an organization's address, a category the claims desk assigns, a
+  capture or validation status.
 
 A field counts as filled only when it holds a value. These do not:
 
@@ -68,15 +103,16 @@ A field counts as filled only when it holds a value. These do not:
 - a `geometry` that is not a real polygon: a point, an empty shape or a ring
   that encloses no area proves no site.
 
-Sources (`SourceTable`) are scored on six baseline fields. One source per
-kind of link (`urlType`) counts, so a project's hundredth photo earns what its
-first did: volume cannot buy a score.
+Sources (`SourceTable`) are scored on six baseline fields, 6 points. One
+source per kind of link (`urlType`) counts, so a project's hundredth photo
+earns what its first did: volume cannot buy a score. The fullest source is
+offered all six; each further kind adds only the fields it fills. A project
+with no source is offered the six and earns none.
 
 ### The weights
 
-`scoreMatrix.ts` is the whole weighting, in one table. A field it does not
-list is worth 1 point; keys, timestamps and a row's own score columns are
-worth 0.
+`scoreMatrix.ts` is the whole weighting, in one table. An offered field it
+does not list is worth 1 point.
 
 | Field | Points |
 |---|---|
@@ -106,8 +142,7 @@ run, so no number survives that the site no longer stands behind.
    under it) is a stakeholder in, each counted once. Listings known to be the
    same planting count as one.
 2. **The weighted mean.** The mean of those projects' scores, each weighted by
-   its points available, so a project that published ninety fields outweighs
-   one that published nine.
+   its points offered, so a project with many records outweighs one with few.
 3. **The disclosure ratio**, for the reviewed cohort only: trees documented in
    plantings over trees claimed, **capped at 1**. Per organization and claim
    category only the current claim is read: the latest one no later claim

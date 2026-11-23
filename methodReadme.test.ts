@@ -1,10 +1,12 @@
 import fs from "node:fs";
 import { describe, expect, it } from "vitest";
 import { RATING_STATE_FLOORS, RATING_STATES } from "$parent/siblings/ReTreever_who_what/lib/rating/ratingState";
-import { SCORE_MATRIX } from "./scoreMatrix";
+import { fieldPoints, OFFERED } from "./projectScore";
+import { matrixPoints, SCORE_MATRIX } from "./scoreMatrix";
 
-// The README is the method an outsider reads: its weights and its state bands
-// must be the code's, or the published method says something the code does not.
+// The README is the method an outsider reads: its weights, what it says a
+// project is offered and its state bands must be the code's, or the published
+// method says something the code does not.
 
 const readme = fs.readFileSync(new URL("./README.md", import.meta.url), "utf8");
 
@@ -27,6 +29,15 @@ describe("README matches the code", () => {
 		const weights = Object.fromEntries(tableUnder("The weights").map(([field, points]) => [field.replaceAll("`", ""), Number(points)]));
 		const matrix = Object.fromEntries(Object.entries(SCORE_MATRIX).map(([field, { points }]) => [field, points]));
 		expect(weights).toEqual(matrix);
+	});
+
+	it("lists every table a project is offered, its fields and one record's points", () => {
+		const points = fieldPoints(matrixPoints(), 1);
+		const offered = Object.entries(OFFERED).map(([table, fields]) => [`\`${table}\``, String(fields.length), String(fields.reduce((sum, f) => sum + points(f), 0))]);
+		expect(tableUnder("What a project is offered")).toEqual(offered);
+		// The least any project is offered: one record of each, and the source baseline's 6.
+		const least = offered.reduce((sum, [, , p]) => sum + Number(p), 0) + 6;
+		expect(readme).toContain(`offered at least ${least} points`);
 	});
 
 	it("states the bands ratingState draws, in order", () => {
