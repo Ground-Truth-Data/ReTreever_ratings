@@ -16,7 +16,8 @@ export const SCORE_MATRIX: Record<
 	latitude: { points: 5, description: "GPS coordinate" },
 	longitude: { points: 5, description: "GPS coordinate" },
 	cropName: { points: 5, description: "Species identification" },
-	speciesId: { points: 5, description: "Species identification" },
+	// A crop's species is the one the join links it to; recordsOf sets it on the crop.
+	speciesName: { points: 5, description: "Species identification" },
 	plantingDt: { points: 5, description: "Temporal data" },
 	plotCenter: { points: 5, description: "Circular plot geometry" },
 	radius: { points: 5, description: "Circular plot geometry" },

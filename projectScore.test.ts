@@ -252,7 +252,7 @@ const fixture = (): Record<string, Row[]> => ({
 		{ landKey: "l4", projectKey: "L", hectares: 2, geometry: null, PolygonTable: [] },
 		{ landKey: "l5", projectKey: "A", hectares: 9, geometry: SQUARE, deletedAt: gone, PolygonTable: [] },
 	],
-	cropTable: [{ cropKey: "c1", projectKey: "B", cropName: "Rhizophora" }],
+	cropTable: [{ cropKey: "c1", projectKey: "B", cropName: "Rhizophora", SpeciesTable: [] }],
 });
 
 const CHILD_TABLES = ["landTable", "cropTable", "plantingTable", "miscTable", "stakeholderTable", "surveyTable", "sourceTable"];
@@ -305,11 +305,11 @@ describe("scoreOneProject", () => {
 		expect(byTable(created[0])).toEqual({
 			ProjectTable: "1 1/1",
 			LandTable: "2 1/21",
-			CropTable: "1 1/1",
+			CropTable: "2 1/2", // an unlinked crop misses its species
 			SourceTable: "6 0/6",
 		});
 		expect(asked.landTable).toEqual([{ projectKey: { in: ["B"] }, deletedAt: null }]);
-		expect(updates[0].data).toMatchObject({ scorePointsAvailable: 29, scorePointsScored: 3 });
+		expect(updates[0].data).toMatchObject({ scorePointsAvailable: 30, scorePointsScored: 3 });
 	});
 
 	// A walk over ProjectTable is what a hierarchy needed; there is none, so the
@@ -555,13 +555,13 @@ describe("bonusableScores", () => {
 	it("SourceTable is the only table on the rule; another joins by listing its baseline fields", () => {
 		expect(Object.keys(BONUSABLE)).toEqual(["SourceTable"]);
 		const crops = [
-			{ cropKey: "c2", cropName: "Rhizophora", speciesId: null, cropDesc: "x" },
-			{ cropKey: "c1", cropName: null, speciesId: null, cropDesc: null },
+			{ cropKey: "c2", cropName: "Rhizophora", speciesName: null, cropDesc: "x" },
+			{ cropKey: "c1", cropName: null, speciesName: null, cropDesc: null },
 		];
-		const rows = bonusableScores("p", "CropTable", crops, { baseline: ["cropName", "speciesId"] }, weighted);
+		const rows = bonusableScores("p", "CropTable", crops, { baseline: ["cropName", "speciesName"] }, weighted);
 		expect(rows.map((r) => `${r.fieldName}=${r.pointsAwarded}/${r.pointsAvailable}`)).toEqual([
 			"CropTable.cropName=5/5",
-			"CropTable.speciesId=0/5",
+			"CropTable.speciesName=0/5",
 		]);
 	});
 });

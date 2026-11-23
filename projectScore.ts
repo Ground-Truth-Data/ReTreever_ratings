@@ -327,7 +327,7 @@ export async function recordsOf(db: ScoreDb, keys: string[]): Promise<Records> {
 				where: of,
 				include: { PolygonTable: { where: { deletedAt: null } } },
 			}),
-			db.cropTable.findMany({ where: of }),
+			db.cropTable.findMany({ where: of, include: { SpeciesTable: { where: { deletedAt: null }, select: { speciesName: true } } } }),
 			db.plantingTable.findMany({ where: of }),
 			db.miscTable.findMany({ where: of }),
 			db.stakeholderTable.findMany({ where: of }),
@@ -337,7 +337,7 @@ export async function recordsOf(db: ScoreDb, keys: string[]): Promise<Records> {
 	return {
 		LandTable: lands.map(({ PolygonTable: _, ...land }) => land),
 		PolygonTable: lands.flatMap((l) => l.PolygonTable),
-		CropTable: crops,
+		CropTable: crops.map(({ SpeciesTable: species, ...crop }) => ({ ...crop, speciesName: species[0]?.speciesName ?? null })),
 		PlantingTable: plantings,
 		MiscTable: misc,
 		StakeholderTable: stakeholders,

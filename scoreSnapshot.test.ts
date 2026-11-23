@@ -363,3 +363,16 @@ describe("a run scores only the orgs the site serves", () => {
 		expect(await clearUnserved(t.prisma, served)).toBe(0);
 	});
 });
+
+describe("a crop's species", () => {
+	it("is the live species the join links it to, scored as speciesName", async () => {
+		const { recordsOf } = await import("./projectScore");
+		const db = t.prisma;
+		await db.projectTable.create({ data: { projectKey: "p-sp", projectName: "Species" } });
+		await db.speciesTable.create({ data: { speciesName: "Rhizophora mucronata", commonName: "Red mangrove" } });
+		await db.cropTable.create({ data: { cropKey: "c-linked", cropName: "rhizophora mucronata", projectKey: "p-sp", SpeciesTable: { connect: { speciesName: "Rhizophora mucronata" } } } });
+		await db.cropTable.create({ data: { cropKey: "c-unlinked", cropName: "Mystery tree", projectKey: "p-sp" } });
+		const crops = (await recordsOf(db, ["p-sp"])).CropTable.map((c) => { const crop = c as { cropKey: string; speciesName: string | null }; return [crop.cropKey, crop.speciesName]; });
+		expect(crops.sort()).toEqual([["c-linked", "Rhizophora mucronata"], ["c-unlinked", null]]);
+	});
+});

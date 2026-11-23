@@ -84,7 +84,7 @@ worth 0.
 | `latitude` | 5 |
 | `longitude` | 5 |
 | `cropName` | 5 |
-| `speciesId` | 5 |
+| `speciesName` | 5 |
 | `plantingDt` | 5 |
 | `plotCenter` | 5 |
 | `radius` | 5 |
