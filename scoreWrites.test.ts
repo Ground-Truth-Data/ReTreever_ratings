@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { pgliteDb, type TestDb } from "$parent/tests/pglite/pgliteDb";
 import { scoreOneOrg } from "./orgScore";
-import { fieldPoints, RECORD_KEY, scoreOneProject } from "./projectScore";
+import { BONUSABLE, fieldPoints, OFFERED, RECORD_KEY, scoreOneProject } from "./projectScore";
 import { withRetry } from "./scoreRun";
 
 // The scorers' writes against Postgres with ReTreever's real schema: what a
@@ -56,14 +56,17 @@ describe("scoreOneProject: each point names its record", () => {
 		for (const r of rows) expect(r.fieldName.split(".")[0], r.fieldName).toBe(r.recordTable);
 		const records = [...new Set(rows.map((r) => `${r.recordTable}:${r.recordKey}`))].sort();
 		expect(records).toEqual([
+			"ClaimTable:null", // the org has made no claim: one record's worth, naming none
 			"CropTable:a-1-c1",
 			"LandTable:a-1-l1",
 			"MiscTable:a-1-m1",
+			"OrganizationTable:o-a-1",
 			"PlantingTable:a-1-t1",
 			"PolygonTable:a-1-g1",
 			"ProjectTable:a-1",
 			"SourceTable:a-1-src-a",
 			"SourceTable:a-1-src-b",
+			"SpeciesTable:null", // the crop is linked to no species
 			"StakeholderTable:a-1-s1",
 			"SurveyTable:a-1-v1",
 		]);
@@ -81,11 +84,16 @@ describe("scoreOneProject: each point names its record", () => {
 		]);
 	});
 
-	it("a project with no source: the six baseline rows name the table and no record", async () => {
+	it("a project with no records: every table's rows name the table and no record", async () => {
 		await seedProject("e-1", false);
 		await scoreOneProject(t.prisma, "e-1", points, "run-1");
 		const rows = await rowsOf("e-1");
-		expect(rows.filter((r) => r.recordKey === null)).toEqual(
+		const empty = rows.filter((r) => r.recordKey === null);
+		expect(empty.every((r) => !r.isAwarded)).toBe(true);
+		expect([...new Set(empty.map((r) => r.recordTable))].sort()).toEqual(
+			[...Object.keys(OFFERED), ...Object.keys(BONUSABLE)].filter((table) => table !== "ProjectTable").sort(),
+		);
+		expect(empty.filter((r) => r.recordTable === "SourceTable")).toEqual(
 			["disclosureType", "sourceCredit", "sourceDesc", "stakeholderCategoryId", "url", "urlType"].map((f) => ({
 				fieldName: `SourceTable.${f}`,
 				recordTable: "SourceTable",
@@ -94,6 +102,21 @@ describe("scoreOneProject: each point names its record", () => {
 			})),
 		);
 		expect(rows.filter((r) => r.recordKey !== null).every((r) => r.recordTable === "ProjectTable" && r.recordKey === "e-1")).toBe(true);
+	});
+
+	// A new column must be offered or refused on purpose: the schema's columns are read here, not copied.
+	it("offers every column of a standard table the weights score, and no other", () => {
+		const fields = (delegate: string) => Object.keys((t.prisma as unknown as Record<string, { fields: object }>)[delegate].fields);
+		const weighs = fieldPoints(new Map(), 1);
+		for (const table of ["ProjectTable", "LandTable", "PolygonTable", "CropTable", "PlantingTable", "MiscTable", "StakeholderTable", "SurveyTable"]) {
+			const scored = fields(table[0].toLowerCase() + table.slice(1)).filter((f) => weighs(f) > 0);
+			// The crop's species comes through the join, not a column.
+			const offered = OFFERED[table].filter((f) => !(table === "CropTable" && f === "speciesName"));
+			expect([...offered].sort(), table).toEqual(scored.sort());
+		}
+		// The three listed tables offer only columns the schema has.
+		for (const table of ["SpeciesTable", "OrganizationTable", "ClaimTable"])
+			expect(fields(table[0].toLowerCase() + table.slice(1)), table).toEqual(expect.arrayContaining([...OFFERED[table]]));
 	});
 
 	it("a rescore replaces the project's rows rather than adding to them", async () => {
@@ -175,7 +198,7 @@ describe("scoreOneProject under a deadlock", () => {
 		await withRetry(() => scoreOneProject(t.prisma, "a-1", points, "run-1"), "score a-1");
 
 		const after = await rowsOf("a-1");
-		expect(after.some((r) => r.recordTable === "CropTable")).toBe(false);
+		expect(after.some((r) => r.recordTable === "CropTable" && r.recordKey !== null)).toBe(false);
 		expect(after).not.toEqual(before);
 		expect(await tallyOf("a-1")).toEqual(await aggregateOf("a-1"));
 		expect((await t.prisma.organizationTable.findUniqueOrThrow({ where: { organizationKey: "o-a-1" } })).scoreOrgFlag).toBe(true);
