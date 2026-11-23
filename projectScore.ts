@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import type { PrismaClient } from "$parent/prisma/generated/prisma-postgres/client.js";
+import { currentClaims } from "./orgScore.js";
 
 export type ScoreDb = Pick<
 	PrismaClient,
@@ -10,10 +11,12 @@ export type ScoreDb = Pick<
 	| "miscTable"
 	| "stakeholderTable"
 	| "organizationTable"
+	| "claimTable"
 	| "surveyTable"
 	| "sourceTable"
 	| "projectScoreByFieldTable"
 	| "$transaction"
+	| "$queryRaw"
 >;
 
 /** Points a field is worth; 0 means it is not scored at all. */
@@ -60,7 +63,7 @@ export type FieldScore = {
 	granularProjectScoreId: string;
 	projectKey: string;
 	recordTable: string;
-	/** Null only on a bonusable table's baseline when the project has no record there. */
+	/** Null when the project has no record in the table: the points one record would have offered. */
 	recordKey: string | null;
 	pointsAwarded: number;
 	fieldName: string;
@@ -74,11 +77,45 @@ export const RECORD_KEY: Record<string, string> = {
 	LandTable: "landKey",
 	PolygonTable: "polygonKey",
 	CropTable: "cropKey",
+	SpeciesTable: "speciesName",
 	PlantingTable: "plantingKey",
 	MiscTable: "polyKey",
 	StakeholderTable: "stakeholderKey",
+	OrganizationTable: "organizationKey",
+	ClaimTable: "claimKey",
 	SurveyTable: "plotKey",
 	SourceTable: "sourceKey",
+};
+
+/**
+ * What one record of each scored table offers: the columns a platform or the
+ * organization itself can fill. A column ReTreever fills is never listed: a
+ * geocoded organization coordinate, a category it assigns, a key, a stamp.
+ * A table with no record still offers these once, unscored, so missing data
+ * costs points. `SourceTable` is not here: it is scored by `BONUSABLE`.
+ */
+export const OFFERED: Record<string, readonly string[]> = {
+	ProjectTable: ["projectName", "projectDesc", "projectSlug", "projectEndDt", "projectStartDt"],
+	LandTable: ["landName", "hectares", "latitude", "longitude", "landDesc", "preparation"],
+	PolygonTable: ["landName", "geometry", "polygonNotes", "type", "hectaresCalc", "centroid"],
+	// speciesName is the species the join links the crop to; recordsOf sets it on the crop.
+	CropTable: ["cropName", "speciesName", "seedInfo", "cropStock", "cropDesc", "speciesSource"],
+	// Not speciesName: it is the crop's 5 points already.
+	SpeciesTable: ["commonName", "scientificName", "type", "family", "reference"],
+	PlantingTable: ["plantedQty", "allocatedQty", "units", "unitType", "pricePerUnit", "currency", "pricePerUnitUSD", "plantingDt"],
+	MiscTable: [
+		"survivalRatePct", "ratePerTree", "restorationTypeId", "employmentQty", "employmentQtyDesc", "reviews",
+		"liabilityCauseId", "liabilityCauseSource", "motivationId", "motivationSource", "restorationTypeSource",
+		"treatmentTypeId", "treatmentTypeSource", "liabilityDt",
+	],
+	StakeholderTable: ["stakeholderCategory"],
+	OrganizationTable: [
+		"organizationName", "organizationSlug", "contactName", "contactEmail", "contactPhone", "address", "website",
+		"organizationDesc", "treeCapAnnualQty",
+	],
+	// What the claim states. Its category and scope are labels the claims desk assigns.
+	ClaimTable: ["claimQty", "claimHectares", "claimSites", "claimDt"],
+	SurveyTable: ["plotCenter", "qualityPct", "radius", "isQualityPass"],
 };
 
 function recordKeyOf(tableName: string, record: object): string {
@@ -200,8 +237,9 @@ function fieldScore(
 	};
 }
 
-/** Tier 1 over every record of every table: one row per scoreable field per
- * record, named `Table.field` and naming its record; awarded when `populated`. Pure. */
+/** Tier 1 over every table: one row per offered field per record, named
+ * `Table.field` and naming its record; awarded when `populated`. A table with
+ * no record offers one record's worth, unscored, under a null key. Pure. */
 export function fieldScores(
 	projectKey: string,
 	tables: Records,
@@ -209,13 +247,12 @@ export function fieldScores(
 ): FieldScore[] {
 	const out: FieldScore[] = [];
 	for (const [tableName, records] of Object.entries(tables)) {
-		for (const record of records) {
-			const recordKey = recordKeyOf(tableName, record);
-			for (const [fieldName, value] of Object.entries(record)) {
-				const pointsAvailable = points(fieldName);
-				if (pointsAvailable === 0) continue;
-				out.push(fieldScore(projectKey, tableName, recordKey, fieldName, value, pointsAvailable));
-			}
+		const offered = OFFERED[tableName];
+		if (!offered) throw new Error(`${tableName}: not a scored table`);
+		const fields = offered.filter((f) => points(f) > 0);
+		for (const record of records.length > 0 ? (records as Record<string, unknown>[]) : [null]) {
+			const recordKey = record ? recordKeyOf(tableName, record) : null;
+			for (const f of fields) out.push(fieldScore(projectKey, tableName, recordKey, f, record?.[f], points(f)));
 		}
 	}
 	return out;
@@ -299,7 +336,7 @@ export function bonusableScores(
 }
 
 /** Tier 1 for one project: a bonusable table by its rule, every other table
- * by every scoreable field of every record. Pure. */
+ * by every offered field of every record. Pure. */
 export function projectFieldScores(
 	projectKey: string,
 	tables: Records,
@@ -314,10 +351,13 @@ export function projectFieldScores(
 }
 
 /**
- * The live records of `keys`, by table, scalar columns only. A soft-deleted
- * record, or a soft-deleted polygon under a live land, is not a record.
- * Sources are read by `SourceTable.projectKey`: ProjectTable's many-to-many
- * relation to them is empty.
+ * The live records of `keys`, by table; a table with none is an empty list. A
+ * soft-deleted record, or a soft-deleted polygon under a live land, is not a
+ * record. Sources are read by `SourceTable.projectKey`: ProjectTable's
+ * many-to-many relation to them is empty. An organization is one a live
+ * stakeholder names, once however many name it; a claim is one of those
+ * organizations' current claims, the same ones their disclosure ratio reads;
+ * a species is one a crop is linked to.
  */
 export async function recordsOf(db: ScoreDb, keys: string[]): Promise<Records> {
 	const of = { projectKey: { in: keys }, deletedAt: null };
@@ -327,20 +367,29 @@ export async function recordsOf(db: ScoreDb, keys: string[]): Promise<Records> {
 				where: of,
 				include: { PolygonTable: { where: { deletedAt: null } } },
 			}),
-			db.cropTable.findMany({ where: of, include: { SpeciesTable: { where: { deletedAt: null }, select: { speciesName: true } } } }),
+			db.cropTable.findMany({ where: of, include: { SpeciesTable: { where: { deletedAt: null } } } }),
 			db.plantingTable.findMany({ where: of }),
 			db.miscTable.findMany({ where: of }),
 			db.stakeholderTable.findMany({ where: of }),
 			db.surveyTable.findMany({ where: of }),
 			db.sourceTable.findMany({ where: of }),
 		]);
+	const organizations = await db.organizationTable.findMany({
+		where: { organizationKey: { in: [...new Set(stakeholders.map((s) => s.organizationKey))].sort() }, deletedAt: null },
+	});
+	const current = organizations.length > 0 ? await currentClaims(db, organizations.map((o) => o.organizationKey)) : [];
+	const claims = current.length > 0 ? await db.claimTable.findMany({ where: { claimKey: { in: current.map((c) => c.claimKey) } } }) : [];
+	const species = new Map(crops.flatMap((c) => c.SpeciesTable).map((s) => [s.speciesName, s]));
 	return {
 		LandTable: lands.map(({ PolygonTable: _, ...land }) => land),
 		PolygonTable: lands.flatMap((l) => l.PolygonTable),
-		CropTable: crops.map(({ SpeciesTable: species, ...crop }) => ({ ...crop, speciesName: species[0]?.speciesName ?? null })),
+		CropTable: crops.map(({ SpeciesTable: linked, ...crop }) => ({ ...crop, speciesName: linked[0]?.speciesName ?? null })),
+		SpeciesTable: [...species.values()],
 		PlantingTable: plantings,
 		MiscTable: misc,
 		StakeholderTable: stakeholders,
+		OrganizationTable: organizations,
+		ClaimTable: claims,
 		SurveyTable: surveys,
 		SourceTable: sources,
 	};

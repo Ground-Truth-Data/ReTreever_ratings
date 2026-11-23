@@ -73,7 +73,7 @@ describe("populated: a value by its type", () => {
 });
 
 describe("fieldScores", () => {
-	it("one row per scoreable field per record, named Table.field; populated is not null and not empty", () => {
+	it("one row per offered field per record, named Table.field; a column the list does not name is never a field", () => {
 		const rows = fieldScores(
 			"p",
 			{
@@ -85,16 +85,35 @@ describe("fieldScores", () => {
 			points,
 		);
 		expect(rows.map((r) => `${r.fieldName}=${r.pointsAwarded}/${r.pointsAvailable}`)).toEqual([
-			"LandTable.hectares=1/1",
-			"LandTable.geometry=0/20",
 			"LandTable.landName=0/1",
-			"LandTable.hectares=0/1",
-			"LandTable.geometry=20/20",
+			"LandTable.hectares=1/1",
+			"LandTable.latitude=0/1",
+			"LandTable.longitude=0/1",
+			"LandTable.landDesc=0/1",
+			"LandTable.preparation=0/1",
 			"LandTable.landName=1/1",
+			"LandTable.hectares=0/1",
+			"LandTable.latitude=0/1",
+			"LandTable.longitude=0/1",
+			"LandTable.landDesc=0/1",
+			"LandTable.preparation=0/1",
 		]);
 		expect(rows.every((r) => r.projectKey === "p")).toBe(true);
-		expect(new Set(rows.map((r) => r.granularProjectScoreId)).size).toBe(6);
-		expect(rows.map((r) => `${r.recordTable}:${r.recordKey}`)).toEqual([...Array(3).fill("LandTable:l1"), ...Array(3).fill("LandTable:l2")]);
+		expect(new Set(rows.map((r) => r.granularProjectScoreId)).size).toBe(12);
+		expect(rows.map((r) => `${r.recordTable}:${r.recordKey}`)).toEqual([...Array(6).fill("LandTable:l1"), ...Array(6).fill("LandTable:l2")]);
+	});
+
+	it("a table with no record offers one record's worth, unscored, under no key", () => {
+		const tally = (table: string) => {
+			const rows = fieldScores("p", { [table]: [] }, weighted);
+			expect(rows.every((r) => r.recordTable === table && r.recordKey === null && !r.isAwarded), table).toBe(true);
+			return `${rows.reduce((s, r) => s + r.pointsAwarded, 0)}/${rows.reduce((s, r) => s + r.pointsAvailable, 0)}`;
+		};
+		expect(tally("PlantingTable")).toBe("0/16");
+		expect(tally("LandTable")).toBe("0/14");
+		expect(tally("PolygonTable")).toBe("0/25");
+		expect(tally("OrganizationTable")).toBe("0/9");
+		expect(tally("ClaimTable")).toBe("0/4");
 	});
 
 	it("a placeholder earns nothing: {} geometry, a point, a zero-area ring, blank or 'N/A' text, Null Island, a 0 size", () => {
@@ -111,26 +130,27 @@ describe("fieldScores", () => {
 			},
 			points,
 		);
-		expect(rows.map((r) => `${r.recordKey}.${r.fieldName.split(".")[1]}=${r.pointsAwarded}`)).toEqual([
+		const set = rows.filter((r) => (r.recordTable === "PolygonTable" ? r.fieldName.endsWith(".geometry") : !r.fieldName.endsWith(".preparation")));
+		expect(set.map((r) => `${r.recordKey}.${r.fieldName.split(".")[1]}=${r.pointsAwarded}`)).toEqual([
 			"g1.geometry=0",
 			"g2.geometry=0",
 			"g3.geometry=0",
 			"g4.geometry=20",
 			"l1.landName=0",
-			"l1.landDesc=0",
+			"l1.hectares=0",
 			"l1.latitude=0",
 			"l1.longitude=1",
-			"l1.hectares=0",
+			"l1.landDesc=0",
 		]);
 	});
 
 	it("refuses a record it cannot name: a point must lead to its row", () => {
 		expect(() => fieldScores("p", { LandTable: [{ hectares: 3 }] }, points)).toThrow(/LandTable: a scored record without its landKey/);
-		expect(() => fieldScores("p", { ClaimTable: [{ claimKey: "k", claimQty: 1 }] }, points)).toThrow(/ClaimTable/);
+		expect(() => fieldScores("p", { PlatformTable: [{ platformId: "a" }] }, points)).toThrow(/PlatformTable: not a scored table/);
 	});
 });
 
-type Row = Record<string, unknown> & { projectKey: string };
+type Row = Record<string, unknown>;
 type Where = Record<string, unknown>;
 type Include = Record<string, boolean | { where: Where }>;
 
@@ -190,11 +210,13 @@ function stubDb(tables: Record<string, Row[]>) {
 		miscTable: delegate("miscTable"),
 		stakeholderTable: delegate("stakeholderTable"),
 		organizationTable: {
+			...delegate("organizationTable"),
 			updateMany: async (args: { where: Where; data: Record<string, unknown> }) => {
 				orgMarks.push(args);
 				return { count: 0 };
 			},
 		},
+		claimTable: delegate("claimTable"),
 		surveyTable: delegate("surveyTable"),
 		sourceTable: delegate("sourceTable"),
 		projectScoreByFieldTable: {
@@ -207,6 +229,8 @@ function stubDb(tables: Record<string, Row[]>) {
 				return { count: data.length };
 			},
 		},
+		// Which claims are current is orgScore's SQL to prove; here it is the rows marked so.
+		$queryRaw: async () => (tables.claimTable ?? []).filter((c) => c.current).map(({ claimKey, claimQty }) => ({ claimKey, claimQty })),
 		// Rollback is Postgres's to prove: scoreWrites.test.ts.
 		$transaction: (fn: (tx: unknown) => Promise<unknown>): Promise<unknown> => fn(db),
 	};
@@ -225,16 +249,17 @@ const unscored = {
 };
 const gone = new Date("2026-09-01");
 
-// Four projects, each 1:1 with a platform's record: A and B are the same
+// Five projects, each 1:1 with a platform's record: A and B are the same
 // project as two platforms published it, L is a third, E was scraped with no
-// records at all. Under A a soft-deleted land, under l1 a soft-deleted
-// polygon: records that no longer exist.
+// records at all, O has partners. Under A a soft-deleted land, under l1 a
+// soft-deleted polygon: records that no longer exist.
 const fixture = (): Record<string, Row[]> => ({
 	projectTable: [
 		{ projectKey: "A", projectName: "Mangrove (a)", ...unscored },
 		{ projectKey: "B", projectName: "Mangrove (b)", ...unscored },
 		{ projectKey: "L", projectName: "Lone", ...unscored },
 		{ projectKey: "E", projectName: "Empty", ...unscored },
+		{ projectKey: "O", projectName: "Partnered", ...unscored },
 	],
 	landTable: [
 		{
@@ -253,7 +278,35 @@ const fixture = (): Record<string, Row[]> => ({
 		{ landKey: "l5", projectKey: "A", hectares: 9, geometry: SQUARE, deletedAt: gone, PolygonTable: [] },
 	],
 	cropTable: [{ cropKey: "c1", projectKey: "B", cropName: "Rhizophora", SpeciesTable: [] }],
+	stakeholderTable: [
+		{ stakeholderKey: "s1", projectKey: "O", organizationKey: "org1", stakeholderCategory: "developer" },
+		{ stakeholderKey: "s2", projectKey: "O", organizationKey: "org1", stakeholderCategory: "funder" },
+		{ stakeholderKey: "s3", projectKey: "O", organizationKey: "org2", stakeholderCategory: "funder" },
+	],
+	organizationTable: [
+		{ organizationKey: "org1", organizationName: "Org", website: "https://o", latitude: 1.5, primaryStakeholderCategory: "developer" },
+		{ organizationKey: "org2", organizationName: "Gone", deletedAt: gone },
+	],
+	claimTable: [
+		{ claimKey: "k1", organizationKey: "org1", claimQty: 10, claimCategory: "trees", current: true },
+		{ claimKey: "k2", organizationKey: "org1", claimQty: 20, claimDt: gone },
+	],
 });
+
+// What a table with no record offers under `points`: one record's worth.
+const EMPTY = {
+	LandTable: "6 0/6",
+	PolygonTable: "6 0/25",
+	CropTable: "6 0/6",
+	SpeciesTable: "5 0/5",
+	PlantingTable: "8 0/8",
+	MiscTable: "14 0/14",
+	StakeholderTable: "1 0/1",
+	OrganizationTable: "9 0/9",
+	ClaimTable: "4 0/4",
+	SurveyTable: "4 0/4",
+	SourceTable: "6 0/6", // no source: the baseline is available and scores nothing
+};
 
 const CHILD_TABLES = ["landTable", "cropTable", "plantingTable", "miscTable", "stakeholderTable", "surveyTable", "sourceTable"];
 
@@ -274,10 +327,10 @@ describe("scoreOneProject", () => {
 
 		// records: fields scored/available
 		expect(byTable(created[0])).toEqual({
-			ProjectTable: "1 1/1", // projectName — keys, stamps, the score columns and both flags are system fields
-			LandTable: "4 21/42", // l1 3+20, l2 0 — the PolygonTable array is not a field
-			PolygonTable: "1 20/20",
-			SourceTable: "6 0/6", // no source: the baseline is available and scores nothing
+			...EMPTY,
+			ProjectTable: "5 1/5", // projectName — keys, stamps, the score columns and both flags are never offered
+			LandTable: "12 1/12", // l1's hectares; a land's geometry and its PolygonTable array are not fields
+			PolygonTable: "6 20/25",
 		});
 		expect(asked.landTable).toEqual([{ projectKey: { in: ["A"] }, deletedAt: null }]);
 		expect(deleted).toEqual([{ projectKey: "A" }]);
@@ -286,9 +339,9 @@ describe("scoreOneProject", () => {
 			{
 				where: { projectKey: "A" },
 				data: {
-					scoreProject: 42 / 69,
-					scorePointsAvailable: 69,
-					scorePointsScored: 42,
+					scoreProject: 22 / 99,
+					scorePointsAvailable: 99,
+					scorePointsScored: 22,
 					scoreLastUpdatedAt: expect.any(Date),
 					scoreProjectFlag: false,
 				},
@@ -303,13 +356,13 @@ describe("scoreOneProject", () => {
 		await scoreOneProject(db, "B", points, "run-1");
 
 		expect(byTable(created[0])).toEqual({
-			ProjectTable: "1 1/1",
-			LandTable: "2 1/21",
-			CropTable: "2 1/2", // an unlinked crop misses its species
-			SourceTable: "6 0/6",
+			...EMPTY,
+			ProjectTable: "5 1/5",
+			LandTable: "6 1/6",
+			CropTable: "6 1/6", // an unlinked crop misses its species
 		});
 		expect(asked.landTable).toEqual([{ projectKey: { in: ["B"] }, deletedAt: null }]);
-		expect(updates[0].data).toMatchObject({ scorePointsAvailable: 30, scorePointsScored: 3 });
+		expect(updates[0].data).toMatchObject({ scorePointsAvailable: 93, scorePointsScored: 3 });
 	});
 
 	// A walk over ProjectTable is what a hierarchy needed; there is none, so the
@@ -327,17 +380,33 @@ describe("scoreOneProject", () => {
 		for (const t of CHILD_TABLES)
 			expect(asked[t], t).toEqual([{ projectKey: { in: ["A"] }, deletedAt: null }]);
 		expect(included.landTable).toEqual([{ PolygonTable: { where: { deletedAt: null } } }]);
-		// l5 (9 ha, a polygon) and g2 would have been 2 more land fields and 1 more polygon field
-		expect(byTable(created[0]).LandTable).toBe("4 21/42");
-		expect(byTable(created[0]).PolygonTable).toBe("1 20/20");
+		// l5 (9 ha) would have been a third land record and g2 a second polygon
+		expect(byTable(created[0]).LandTable).toBe("12 1/12");
+		expect(byTable(created[0]).PolygonTable).toBe("6 20/25");
 	});
 
-	it("scores a project the scrape left no records for over its own row alone", async () => {
+	it("a project the scrape left no records for is still offered one record of every table", async () => {
 		const { db, updates, created } = stubDb(fixture());
 		await scoreOneProject(db, "E", points, "run-1");
 
-		expect(byTable(created[0])).toEqual({ ProjectTable: "1 1/1", SourceTable: "6 0/6" });
-		expect(updates[0].data).toMatchObject({ scorePointsAvailable: 7, scorePointsScored: 1 });
+		expect(byTable(created[0])).toEqual({ ...EMPTY, ProjectTable: "5 1/5" });
+		expect(created[0].filter((r) => !r.fieldName.startsWith("ProjectTable.")).every((r) => (r as { recordKey?: unknown }).recordKey === null)).toBe(true);
+		expect(updates[0].data).toMatchObject({ scorePointsAvailable: 93, scorePointsScored: 1 });
+	});
+
+	it("scores an organization once however many stakeholders name it, and only its current claims", async () => {
+		const { db, created, asked } = stubDb(fixture());
+		await scoreOneProject(db, "O", points, "run-1");
+
+		expect(byTable(created[0])).toMatchObject({
+			StakeholderTable: "3 3/3",
+			// org1's name and website; its coordinate and its category are ReTreever's, never fields. org2 is deleted.
+			OrganizationTable: "9 2/9",
+			// k1's quantity; k2 is not current.
+			ClaimTable: "4 1/4",
+		});
+		expect(asked.organizationTable).toEqual([{ organizationKey: { in: ["org1", "org2"] }, deletedAt: null }]);
+		expect(asked.claimTable).toEqual([{ claimKey: { in: ["k1"] } }]);
 	});
 
 	it("gives an unchanged project the same numbers on a rescore: its own score columns are never fields", async () => {
@@ -345,7 +414,7 @@ describe("scoreOneProject", () => {
 		const { db, updates, created } = stubDb(tables);
 		await scoreOneProject(db, "A", points, "run-1");
 		// The first run's numbers are on the row when the second reads it.
-		expect(tables.projectTable[0]).toMatchObject({ scorePointsScored: 42, scorePointsAvailable: 69, scoreProjectFlag: false });
+		expect(tables.projectTable[0]).toMatchObject({ scorePointsScored: 22, scorePointsAvailable: 99, scoreProjectFlag: false });
 		await scoreOneProject(db, "A", points, "run-1");
 
 		const numbers = ({ scorePointsScored, scorePointsAvailable, scoreProject }: Record<string, unknown>) =>
@@ -446,7 +515,8 @@ describe("sources: the first is a baseline, further ones a capped bonus", () => 
 			"stakeholderCategoryId=0/1",
 		]);
 		expect(src).toBe("6 0/6");
-		expect(data).toMatchObject({ scorePointsScored: 1, scorePointsAvailable: 7 });
+		// The project's name, of its own 5, the baseline's 6 and the 115 every other table offers.
+		expect(data).toMatchObject({ scorePointsScored: 1, scorePointsAvailable: 126 });
 		expect(data.scoreProject).toBeLessThan(1);
 	});
 
@@ -489,7 +559,7 @@ describe("sources: the first is a baseline, further ones a capped bonus", () => 
 			"sourceDesc=1/1",
 		]);
 		expect(src).toBe("12 10/12");
-		expect(data).toMatchObject({ scorePointsScored: 11, scorePointsAvailable: 13 });
+		expect(data).toMatchObject({ scorePointsScored: 11, scorePointsAvailable: 132 });
 	});
 
 	it("120 sources of one urlType score what one does", async () => {
