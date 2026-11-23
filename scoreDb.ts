@@ -2,11 +2,10 @@
  * The one Prisma client every scorer module uses, so a process holds one pool
  * however many scorers it imports.
  *
- * Supavisor's session pooler refuses the 16th client outright ("max clients
- * are limited to pool_size: 15"). A run is this pool (`pool.maxConnections`)
- * plus the run lock's one connection, which leaves room for psql or Studio.
- * Foundr's orchestrator hands in its own client instead, so a pipeline run is
- * Foundr's pool plus the lock — never a second pool beside it.
+ * It runs on the 6543 transaction pooler: a session-pooler client pins a
+ * Postgres backend, and a --full run's ten starved dev Central's other users.
+ * The run lock opens its own session connection. Foundr's orchestrator hands
+ * in its own client instead, so a pipeline run never opens a second pool.
  */
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -16,7 +15,6 @@ import { fileURLToPath } from "node:url";
 import { PrismaPg } from "@prisma/adapter-pg";
 import pg from "pg";
 import { PrismaClient } from "$parent/prisma/generated/prisma-postgres/client.js";
-import { namePool } from "$parent/src/lib/server/runLock.js";
 import { foldPairs, pairsHash } from "./projectClusters.js";
 import { logicDriftLines, scoreLogicDrift } from "./scoreLogic.js";
 import { matrixHash, METHODOLOGY_VERSION, seedScoreMatrix } from "./scoreMatrix.js";
@@ -41,8 +39,8 @@ export function useScoreDb(db: PrismaClient): void {
 
 export function scoreDb(): PrismaClient {
 	if (client) return client;
-	const connectionString = process.env.GC_RT_supabase_dev_session;
-	if (!connectionString) throw new Error("GC_RT_supabase_dev_session is not set!");
+	const connectionString = process.env.GC_RT_supabase_dev_transaction;
+	if (!connectionString) throw new Error("GC_RT_supabase_dev_transaction is not set!");
 	ownPool = new pg.Pool({
 		connectionString,
 		max: scoreConfig.pool.maxConnections,
@@ -54,7 +52,6 @@ export function scoreDb(): PrismaClient {
 		connectionTimeoutMillis: 30_000,
 		query_timeout: 300_000,
 	});
-	namePool(ownPool, "score pool");
 	client = new PrismaClient({ adapter: new PrismaPg(ownPool) });
 	return client;
 }
