@@ -103,6 +103,7 @@ export const OFFERED: Record<string, readonly string[]> = {
 	// Not speciesName: it is the crop's 5 points already.
 	SpeciesTable: ["commonName", "scientificName", "type", "family", "reference"],
 	PlantingTable: ["plantedQty", "allocatedQty", "units", "unitType", "pricePerUnit", "currency", "pricePerUnitUSD", "plantingDt"],
+	// The four `…Id` fields are ReTreever's reading of the `…Source` beside each; they stay offered on purpose.
 	MiscTable: [
 		"survivalRatePct", "ratePerTree", "restorationTypeId", "employmentQty", "employmentQtyDesc", "reviews",
 		"liabilityCauseId", "liabilityCauseSource", "motivationId", "motivationSource", "restorationTypeSource",
