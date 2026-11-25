@@ -58,7 +58,7 @@ export async function score_projects(projectKeys: string[], scoreRunId?: string)
 	return failed;
 }
 
-// One PERCENT_RANK() UPDATE (~1s) — ranking is cheap and global, scoring is slow and per-project, so score what changed then re-rank everything.
+// One CUME_DIST() UPDATE (~1s) — ranking is cheap and global, scoring is slow and per-project, so score what changed then re-rank everything.
 export async function rank_projects(): Promise<void> {
 	console.log("\n📊 Ranking projects...");
 

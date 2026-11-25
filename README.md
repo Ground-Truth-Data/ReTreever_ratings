@@ -18,9 +18,9 @@ page shows no rating.
   or lower; the top organization of a group is 100. Beside it the run freezes
   its competition rank in the group, 1 the best, and the page says "3rd of 46"
   from the group's size in that run.
-- **A project's** is `PERCENT_RANK()`, rounded to a whole number: the share of
-  all scored projects scoring strictly below it. The lowest project is 0 and the
-  top is 100.
+- **A project's** is `CUME_DIST()`, rounded to a whole number: the share of
+  all scored projects scoring at or below it. The top project is 100 and the
+  lowest is never 0.
 
 **Organizations are compared within their primary stakeholder category**
 (developers against developers, producers against producers), the role they

@@ -77,7 +77,7 @@ const breakdownOf = (lines: string) => `
  * breakdown sums to its stored points and, for an org, its pre-claim score is
  * the points-weighted mean of the scored projects it averaged; a folded
  * cluster's lines are its members' mean, as the cluster was scored. Unscored rows
- * reconcile: they show no breakdown. A project's percentile is the PERCENT_RANK
+ * reconcile: they show no breakdown. A project's percentile is the CUME_DIST
  * rank_projects stored; its rank, 1 = best, is counted here. An org's
  * percentile and rank are rankOrgs', within the group frozen beside them as
  * `category`: its category, or `all` when that group was under the minimum and
