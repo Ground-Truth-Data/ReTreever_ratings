@@ -104,6 +104,7 @@ describe("scoreLogicDrift", () => {
 				kind: "project",
 				scoreRunId: "r1",
 				what: `2 projects, last scored 13 Nov 2026 by run r1 at ${sha.slice(0, 8)}`,
+				count: 2,
 				why: "projectScore.ts changed",
 				fix: "gitEr/CLI.sh score projects --full",
 			},
@@ -163,7 +164,7 @@ describe("scoreLogicDrift", () => {
 		await scoredAtFirstCommit();
 		await projectScored("a-old", null);
 		expect((await drift())?.stale).toEqual([
-			{ kind: "project", scoreRunId: null, what: "1 project, last scored by no recorded run", why: "written before score runs were recorded", fix: "gitEr/CLI.sh score projects --full" },
+			{ kind: "project", scoreRunId: null, what: "1 project, last scored by no recorded run", count: 1, why: "written before score runs were recorded", fix: "gitEr/CLI.sh score projects --full" },
 		]);
 	});
 

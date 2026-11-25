@@ -38,6 +38,8 @@ export type StaleLogic = {
 	scoreRunId: string | null;
 	/** What is behind: "2,592 projects, last scored 13 Nov 2026 by run … at 271d0850". */
 	what: string;
+	/** The stored rows behind; null for ranks, which belong to one run. */
+	count: number | null;
 	/** What moved since: "projectScore.ts changed, the weights changed". */
 	why: string;
 	/** The command that brings it up to the tree. */
@@ -147,6 +149,7 @@ export async function scoreLogicDrift(db: LogicDb, dir: string = RATINGS_DIR): P
 				kind,
 				scoreRunId: run?.scoreRunId ?? null,
 				what: `${count(n, noun)}, last scored ${run ? by(run) : "by no recorded run"}`,
+				count: n,
 				why: why.join(", "),
 				fix: SCORE_LOGIC[kind].fix,
 			});
@@ -160,6 +163,7 @@ export async function scoreLogicDrift(db: LogicDb, dir: string = RATINGS_DIR): P
 				kind: "rank",
 				scoreRunId: finished.scoreRunId,
 				what: `The ranks of the latest finished run, made ${by(finished)}`,
+				count: null,
 				why: why.join(", "),
 				fix: SCORE_LOGIC.rank.fix,
 			});
