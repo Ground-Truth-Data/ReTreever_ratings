@@ -119,6 +119,20 @@ export const OFFERED: Record<string, readonly string[]> = {
 	SurveyTable: ["plotCenter", "qualityPct", "radius", "isQualityPass"],
 };
 
+/**
+ * The free-text fields that earn by how much they say: a text earns its share
+ * of the cap in words, rounded up, and the cap earns all. Each cap is dev's
+ * 90th percentile of the field's filled values, all platforms, 26 Nov 2026.
+ * Any other field is whole or nothing.
+ */
+export const WORD_CAPS: Readonly<Record<string, number>> = {
+	"ProjectTable.projectDesc": 310,
+	"LandTable.landDesc": 170,
+	"OrganizationTable.organizationDesc": 250,
+	"CropTable.cropDesc": 100,
+	"SourceTable.sourceDesc": 30,
+};
+
 function recordKeyOf(tableName: string, record: object): string {
 	const column = RECORD_KEY[tableName];
 	const key = column ? (record as Record<string, unknown>)[column] : undefined;
@@ -219,22 +233,32 @@ export function populated(fieldName: string, value: unknown): boolean {
 	return true;
 }
 
+const wordsIn = (text: string): number => unmarked(text).split(/\s+/).filter((w) => /[\p{L}\p{N}]/u.test(w)).length;
+
+/** What a field of `recordTable` earns of its `points`: 0 unless `populated`, a capped text its share in words. */
+export function earned(recordTable: string, fieldName: string, value: unknown, points: number): number {
+	if (!populated(fieldName, value)) return 0;
+	const cap = WORD_CAPS[`${recordTable}.${fieldName}`];
+	if (cap === undefined || typeof value !== "string") return points;
+	return Math.ceil((points * Math.min(wordsIn(value), cap)) / cap);
+}
+
 function fieldScore(
 	projectKey: string,
 	recordTable: string,
 	recordKey: string | null,
 	field: string,
-	value: unknown,
+	pointsAwarded: number,
 	pointsAvailable: number,
 ): FieldScore {
-	const isAwarded = populated(field, value);
+	const isAwarded = pointsAwarded > 0;
 	const fieldName = `${recordTable}.${field}`;
 	return {
 		granularProjectScoreId: crypto.randomUUID(),
 		projectKey,
 		recordTable,
 		recordKey,
-		pointsAwarded: isAwarded ? pointsAvailable : 0,
+		pointsAwarded,
 		fieldName,
 		isAwarded,
 		pointsAvailable,
@@ -242,7 +266,7 @@ function fieldScore(
 }
 
 /** Tier 1 over every table: one row per offered field per record, named
- * `Table.field` and naming its record; awarded when `populated`. A table with
+ * `Table.field` and naming its record; it earns what `earned` gives. A table with
  * no record offers one record's worth, unscored, under a null key. Pure. */
 export function fieldScores(
 	projectKey: string,
@@ -256,7 +280,8 @@ export function fieldScores(
 		const fields = offered.filter((f) => points(f) > 0);
 		for (const record of records.length > 0 ? (records as Record<string, unknown>[]) : [null]) {
 			const recordKey = record ? recordKeyOf(tableName, record) : null;
-			for (const f of fields) out.push(fieldScore(projectKey, tableName, recordKey, f, record?.[f], points(f)));
+			for (const f of fields)
+				out.push(fieldScore(projectKey, tableName, recordKey, f, earned(tableName, f, record?.[f], points(f)), points(f)));
 		}
 	}
 	return out;
@@ -290,11 +315,11 @@ export const BONUSABLE: Record<string, Bonusable> = {
 /**
  * Tier 1 for a bonusable table. The baseline record counts every baseline
  * field, filled or not — with no record, every one is available and unscored,
- * and its row names the table and no key. Each further record adds only the
- * baseline fields it fills, to awarded and available alike. No other column of
+ * and its row names the table and no key. Each further record adds only what
+ * its baseline fields earn, to awarded and available alike. No other column of
  * the table is ever a field. Pure.
  *
- * The baseline is the record that fills the most points: SourceTable has no
+ * The baseline is the record that earns the most points: SourceTable has no
  * creation order, so "first" has to mean something, and the fullest record is
  * the one a project is fairly judged by.
  */
@@ -309,7 +334,7 @@ export function bonusableScores(
 	const ranked = (records as Record<string, unknown>[])
 		.map((record) => ({
 			record,
-			filled: fields.reduce((sum, f) => sum + (populated(f, record[f]) ? points(f) : 0), 0),
+			filled: fields.reduce((sum, f) => sum + earned(tableName, f, record[f], points(f)), 0),
 			key: recordKeyOf(tableName, record),
 		}))
 		.sort((a, b) => b.filled - a.filled || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
@@ -328,13 +353,15 @@ export function bonusableScores(
 	const [baseline, ...bonus] = counted;
 	const baselineKey = baseline ? recordKeyOf(tableName, baseline) : null;
 	const out = fields.map((f) =>
-		fieldScore(projectKey, tableName, baselineKey, f, baseline?.[f], points(f)),
+		fieldScore(projectKey, tableName, baselineKey, f, earned(tableName, f, baseline?.[f], points(f)), points(f)),
 	);
 	for (const record of bonus) {
 		const recordKey = recordKeyOf(tableName, record);
-		for (const f of fields)
-			if (populated(f, record[f]))
-				out.push(fieldScore(projectKey, tableName, recordKey, f, record[f], points(f)));
+		for (const f of fields) {
+			// Offered only what it earns, so a short caption on a further source can never lower the score.
+			const e = earned(tableName, f, record[f], points(f));
+			if (e > 0) out.push(fieldScore(projectKey, tableName, recordKey, f, e, e));
+		}
 	}
 	return out;
 }

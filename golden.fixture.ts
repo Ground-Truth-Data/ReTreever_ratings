@@ -12,13 +12,14 @@ export const GOLDEN_SERVED: Prisma.OrganizationTableWhereInput = { isParent: tru
 
 const SQUARE = { type: "Polygon", coordinates: [[[0, 0], [0.01, 0], [0.01, 0.01], [0, 0.01], [0, 0]]] };
 
-type Site = { latLon: boolean; polygon: object; planted: number; crop: boolean };
+type Site = { latLon: boolean; polygon: object; planted: number; crop: boolean; descWords?: number };
 
 const SITES: Record<Exclude<GoldenOrg, "nothing" | "sponsor" | "developer">, Site> = {
-	noClaim: { latLon: true, polygon: SQUARE, planted: 500, crop: true },
+	// The two descriptions split what would be a tie: a tenth of the cap's words against all of them.
+	noClaim: { latLon: true, polygon: SQUARE, planted: 500, crop: true, descWords: 31 },
 	validated: { latLon: false, polygon: SQUARE, planted: 800, crop: true },
 	overClaim: { latLon: true, polygon: {}, planted: 500, crop: true },
-	unvalidated: { latLon: true, polygon: SQUARE, planted: 500, crop: true },
+	unvalidated: { latLon: true, polygon: SQUARE, planted: 500, crop: true, descWords: 310 },
 	restated: { latLon: true, polygon: SQUARE, planted: 500, crop: false },
 };
 
@@ -59,7 +60,8 @@ const CLAIMS: Partial<Record<GoldenOrg, Claim[]>> = {
 
 async function seedProject(db: PrismaClient, name: string, site: Site, stakeholders: [organizationKey: string, role: string][]): Promise<void> {
 	const projectKey = `p-${name}`;
-	await db.projectTable.create({ data: { projectKey, projectName: `${name} mangroves` } });
+	const projectDesc = site.descWords ? Array.from({ length: site.descWords }, (_, i) => `word${i}`).join(" ") : undefined;
+	await db.projectTable.create({ data: { projectKey, projectName: `${name} mangroves`, projectDesc } });
 	await db.stakeholderCategoryTable.createMany({
 		data: stakeholders.map(([, id]) => ({ stakeholderCategoryId: id, stakeholderCategoryName: id })),
 		skipDuplicates: true,

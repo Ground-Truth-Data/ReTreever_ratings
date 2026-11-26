@@ -12,7 +12,7 @@
 		}
 	},
 	"defaults": {
-		"fieldPoints": 1
+		"fieldPoints": 10
 	},
 	"plantingOwnerRoles": ["developer_ish", "producer_ish", "landowner_ish"],
 	"minCategoryGroup": 5

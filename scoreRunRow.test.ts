@@ -292,8 +292,8 @@ describe("a published score can be reproduced from its run", () => {
 			select: { scoreProject: true, scorePointsScored: true, scorePointsAvailable: true },
 		});
 		const publishedRows = (await fieldRows("a-1")).map(({ scoreRunId: _, ...r }) => r);
-		// Real weights reached the rows: geometry is the 20-point field.
-		expect(publishedRows.find((r) => r.fieldName === "PolygonTable.geometry")).toMatchObject({ pointsAwarded: 20, pointsAvailable: 20 });
+		// Real weights reached the rows: geometry is the 200-point field.
+		expect(publishedRows.find((r) => r.fieldName === "PolygonTable.geometry")).toMatchObject({ pointsAwarded: 200, pointsAvailable: 200 });
 		expect(published.scorePointsScored).toBe(publishedRows.reduce((n, r) => n + r.pointsAwarded, 0));
 
 		// The run says which weights and config it used; they are the ones in git now.

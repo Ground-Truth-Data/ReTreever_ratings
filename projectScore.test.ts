@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { BONUSABLE, bonusableScores, fieldPoints, fieldScores, isRealPolygon, populated, scoreOneProject } from "./projectScore";
+import { BONUSABLE, bonusableScores, earned, fieldPoints, fieldScores, isRealPolygon, OFFERED, populated, scoreOneProject, WORD_CAPS } from "./projectScore";
+import config from "./scoreConfig.json" with { type: "json" };
 import { SCORE_MATRIX } from "./scoreMatrix";
 
 const points = fieldPoints(new Map([["geometry", 20]]), 1);
@@ -115,11 +116,11 @@ describe("fieldScores", () => {
 			expect(rows.every((r) => r.recordTable === table && r.recordKey === null && !r.isAwarded), table).toBe(true);
 			return `${rows.reduce((s, r) => s + r.pointsAwarded, 0)}/${rows.reduce((s, r) => s + r.pointsAvailable, 0)}`;
 		};
-		expect(tally("PlantingTable")).toBe("0/16");
-		expect(tally("LandTable")).toBe("0/14");
-		expect(tally("PolygonTable")).toBe("0/25");
-		expect(tally("OrganizationTable")).toBe("0/9");
-		expect(tally("ClaimTable")).toBe("0/4");
+		expect(tally("PlantingTable")).toBe("0/160");
+		expect(tally("LandTable")).toBe("0/140");
+		expect(tally("PolygonTable")).toBe("0/250");
+		expect(tally("OrganizationTable")).toBe("0/90");
+		expect(tally("ClaimTable")).toBe("0/40");
 	});
 
 	it("a placeholder earns nothing: {} geometry, a point, a zero-area ring, blank or 'N/A' text, Null Island, a 0 size", () => {
@@ -153,6 +154,63 @@ describe("fieldScores", () => {
 	it("refuses a record it cannot name: a point must lead to its row", () => {
 		expect(() => fieldScores("p", { LandTable: [{ hectares: 3 }] }, points)).toThrow(/LandTable: a scored record without its landKey/);
 		expect(() => fieldScores("p", { PlatformTable: [{ platformId: "a" }] }, points)).toThrow(/PlatformTable: not a scored table/);
+	});
+});
+
+describe("a field earns for how much it says", () => {
+	const tenths = fieldPoints(new Map(), 10);
+	const say = (n: number) => Array.from({ length: n }, (_, i) => `w${i}`).join(" ");
+	const desc = (projectDesc: unknown) =>
+		fieldScores("p", { ProjectTable: [{ projectKey: "p", projectName: "Mangroves", projectDesc }] }, tenths)
+			.filter((r) => r.fieldName === "ProjectTable.projectDesc")
+			.map((r) => `${r.pointsAwarded}/${r.pointsAvailable}`)[0];
+
+	it("a description below its cap earns its share in words, rounded up, so one word earns something", () => {
+		const cap = WORD_CAPS["ProjectTable.projectDesc"];
+		expect(desc(say(1))).toBe("1/10");
+		expect(desc(say(cap / 10))).toBe("1/10");
+		expect(desc(say(cap / 10 + 1))).toBe("2/10");
+		expect(desc(say(cap / 2))).toBe("5/10");
+		expect(desc(say(cap - 1))).toBe("10/10");
+	});
+
+	it("one at its cap earns all of it, and one twice the cap earns no more", () => {
+		const cap = WORD_CAPS["ProjectTable.projectDesc"];
+		expect(desc(say(cap))).toBe("10/10");
+		expect(desc(say(cap * 2))).toBe("10/10");
+	});
+
+	it("markup earns nothing and is never a word; punctuation alone is not a word", () => {
+		expect(desc("<p><br></p>")).toBe("0/10");
+		expect(desc("<p>&nbsp;</p>")).toBe("0/10");
+		expect(earned("ProjectTable", "projectDesc", `<p>${say(31)}</p><p>&nbsp;</p>`, 10)).toBe(1);
+		expect(earned("ProjectTable", "projectDesc", `${say(31)} — … - ${say(1)}`, 10)).toBe(2);
+		expect(desc(null)).toBe("0/10");
+	});
+
+	it("a field without a cap is whole or nothing, however short", () => {
+		expect(earned("ProjectTable", "projectName", "M", 10)).toBe(10);
+		expect(earned("MiscTable", "motivationSource", '["OTHER"]', 10)).toBe(10);
+		expect(earned("LandTable", "hectares", 3, 10)).toBe(10);
+		expect(earned("LandTable", "hectares", 0, 10)).toBe(0);
+	});
+
+	it("a by-field row is awarded when it earns anything, and never more than it offers", () => {
+		const rows = fieldScores("p", { LandTable: [{ landKey: "l1", landName: "Plot", landDesc: say(3) }] }, tenths);
+		const land = rows.find((r) => r.fieldName === "LandTable.landDesc");
+		expect(land).toMatchObject({ isAwarded: true, pointsAwarded: 1, pointsAvailable: 10 });
+		for (const r of rows) expect(r.pointsAwarded).toBeLessThanOrEqual(r.pointsAvailable);
+	});
+
+	it("every cap names an offered field or a bonusable baseline field", () => {
+		const scored = new Set([
+			...Object.entries(OFFERED).flatMap(([t, fields]) => fields.map((f) => `${t}.${f}`)),
+			...Object.entries(BONUSABLE).flatMap(([t, rule]) => rule.baseline.map((f) => `${t}.${f}`)),
+		]);
+		for (const [field, cap] of Object.entries(WORD_CAPS)) {
+			expect(scored.has(field), field).toBe(true);
+			expect(Number.isInteger(cap) && cap > 0, field).toBe(true);
+		}
 	});
 });
 
@@ -460,7 +518,7 @@ describe("scoreOneProject", () => {
 // The bootstrap weights, so these numbers are the ones theScore.md's example shows.
 const weighted = fieldPoints(
 	new Map(Object.entries(SCORE_MATRIX).map(([f, { points }]) => [f, points])),
-	1,
+	config.defaults.fieldPoints,
 );
 const BASELINE = ["url", "urlType", "disclosureType", "sourceDesc", "sourceCredit", "stakeholderCategoryId"];
 
@@ -513,16 +571,16 @@ describe("sources: the first is a baseline, further ones a capped bonus", () => 
 	it("no source: the six baseline fields are available and score nothing, so the project row alone cannot reach 100%", async () => {
 		const { data, source: src, fields } = await scoreSources([]);
 		expect(fields).toEqual([
-			"url=0/1",
-			"urlType=0/1",
-			"disclosureType=0/1",
-			"sourceDesc=0/1",
-			"sourceCredit=0/1",
-			"stakeholderCategoryId=0/1",
+			"url=0/10",
+			"urlType=0/10",
+			"disclosureType=0/10",
+			"sourceDesc=0/10",
+			"sourceCredit=0/10",
+			"stakeholderCategoryId=0/10",
 		]);
-		expect(src).toBe("6 0/6");
-		// The project's name, of its own 5, the baseline's 6 and the 115 every other table offers.
-		expect(data).toMatchObject({ scorePointsScored: 1, scorePointsAvailable: 126 });
+		expect(src).toBe("6 0/60");
+		// The project's name, of its own 50, the baseline's 60 and the 1,150 every other table offers.
+		expect(data).toMatchObject({ scorePointsScored: 10, scorePointsAvailable: 1260 });
 		expect(data.scoreProject).toBeLessThan(1);
 	});
 
@@ -530,15 +588,16 @@ describe("sources: the first is a baseline, further ones a capped bonus", () => 
 		const { source: src, fields } = await scoreSources([
 			source({ url: "https://x", urlType: "webpage", sourceDesc: "Project page" }),
 		]);
+		// "Project page" is 2 words of the caption's 30: a tenth, rounded up.
 		expect(fields).toEqual([
-			"url=1/1",
-			"urlType=1/1",
-			"disclosureType=0/1",
-			"sourceDesc=1/1",
-			"sourceCredit=0/1",
-			"stakeholderCategoryId=0/1",
+			"url=10/10",
+			"urlType=10/10",
+			"disclosureType=0/10",
+			"sourceDesc=1/10",
+			"sourceCredit=0/10",
+			"stakeholderCategoryId=0/10",
 		]);
-		expect(src).toBe("6 3/6");
+		expect(src).toBe("6 21/60");
 	});
 
 	// theScore.md § Bonusable tables, worked example.
@@ -548,30 +607,30 @@ describe("sources: the first is a baseline, further ones a capped bonus", () => 
 		const report = source({ url: "https://x/r.pdf", urlType: "document", sourceDesc: "Annual report" });
 		const { data, source: src, fields } = await scoreSources([report, credited, page]);
 		expect(fields).toEqual([
-			// page: 4 of 6
-			"url=1/1",
-			"urlType=1/1",
-			"disclosureType=0/1",
-			"sourceDesc=1/1",
-			"sourceCredit=1/1",
-			"stakeholderCategoryId=0/1",
-			// credited: +3 of +3
-			"url=1/1",
-			"urlType=1/1",
-			"sourceCredit=1/1",
-			// report: +3 of +3
-			"url=1/1",
-			"urlType=1/1",
+			// page: 31 of 60, its two-word caption a tenth of 10
+			"url=10/10",
+			"urlType=10/10",
+			"disclosureType=0/10",
+			"sourceDesc=1/10",
+			"sourceCredit=10/10",
+			"stakeholderCategoryId=0/10",
+			// credited: +30 of +30
+			"url=10/10",
+			"urlType=10/10",
+			"sourceCredit=10/10",
+			// report: +21 of +21, its caption offered only what it earns
+			"url=10/10",
+			"urlType=10/10",
 			"sourceDesc=1/1",
 		]);
-		expect(src).toBe("12 10/12");
-		expect(data).toMatchObject({ scorePointsScored: 11, scorePointsAvailable: 132 });
+		expect(src).toBe("12 82/111");
+		expect(data).toMatchObject({ scorePointsScored: 92, scorePointsAvailable: 1311 });
 	});
 
 	it("120 sources of one urlType score what one does", async () => {
 		const one = await scoreSources([photo("Nursery")]);
 		const many = await scoreSources(Array.from({ length: 120 }, () => photo("Nursery")));
-		expect(one.source).toBe("6 3/6");
+		expect(one.source).toBe("6 21/60");
 		expect(many.fields).toEqual(one.fields);
 		expect(many.data).toEqual({ ...one.data, scoreLastUpdatedAt: expect.any(Date) });
 	});
@@ -583,8 +642,16 @@ describe("sources: the first is a baseline, further ones a capped bonus", () => 
 		const a = await scoreSources([bare, described, page]);
 		const b = await scoreSources([page, described, bare]);
 		expect(a.fields).toEqual(b.fields);
-		// the baseline is the described photo (3 points filled) over the page and the bare photo (2 each)
-		expect(a.source).toBe("8 5/8");
+		// the baseline is the described photo (22 points earned) over the page and the bare photo (20 each)
+		expect(a.source).toBe("8 42/80");
+	});
+
+	it("of two photos, the one whose caption says more is the baseline and earns more", async () => {
+		const caption = Array.from({ length: WORD_CAPS["SourceTable.sourceDesc"] }, (_, i) => `w${i}`).join(" ");
+		const { fields } = await scoreSources([photo("Photo"), photo(caption)]);
+		expect(fields.filter((f) => f.startsWith("sourceDesc="))).toEqual(["sourceDesc=10/10"]);
+		const short = await scoreSources([photo("Photo")]);
+		expect(short.fields.filter((f) => f.startsWith("sourceDesc="))).toEqual(["sourceDesc=1/10"]);
 	});
 
 	it("a soft-deleted source counts as none", async () => {
@@ -592,7 +659,7 @@ describe("sources: the first is a baseline, further ones a capped bonus", () => 
 		const deleted = await scoreSources([
 			source({ url: "https://x", urlType: "webpage", sourceDesc: "d", sourceCredit: "c" }, { deletedAt: gone }),
 		]);
-		expect(deleted.source).toBe("6 0/6");
+		expect(deleted.source).toBe("6 0/60");
 		expect(deleted.fields).toEqual(none.fields);
 		expect(deleted.data).toEqual({ ...none.data, scoreLastUpdatedAt: expect.any(Date) });
 	});
@@ -636,8 +703,8 @@ describe("bonusableScores", () => {
 		];
 		const rows = bonusableScores("p", "CropTable", crops, { baseline: ["cropName", "speciesName"] }, weighted);
 		expect(rows.map((r) => `${r.fieldName}=${r.pointsAwarded}/${r.pointsAvailable}`)).toEqual([
-			"CropTable.cropName=5/5",
-			"CropTable.speciesName=0/5",
+			"CropTable.cropName=50/50",
+			"CropTable.speciesName=0/50",
 		]);
 	});
 });

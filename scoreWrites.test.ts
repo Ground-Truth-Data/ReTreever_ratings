@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { pgliteDb, type TestDb } from "$parent/tests/pglite/pgliteDb";
 import { scoreOneOrg } from "./orgScore";
-import { BONUSABLE, fieldPoints, OFFERED, RECORD_KEY, scoreOneProject } from "./projectScore";
+import { BONUSABLE, fieldPoints, OFFERED, RECORD_KEY, scoreOneProject, WORD_CAPS } from "./projectScore";
 import { withRetry } from "./scoreRun";
 
 // The scorers' writes against Postgres with ReTreever's real schema: what a
@@ -125,6 +125,27 @@ describe("scoreOneProject: each point names its record", () => {
 		const first = await rowsOf("a-1");
 		await scoreOneProject(t.prisma, "a-1", points, "run-1");
 		expect(await rowsOf("a-1")).toEqual(first);
+	});
+
+	it("a graded row earns between 0 and what it offers, and the project's totals are its rows' sums", async () => {
+		await seedProject("a-1");
+		const half = Array.from({ length: WORD_CAPS["ProjectTable.projectDesc"] / 2 }, (_, i) => `w${i}`).join(" ");
+		await t.prisma.projectTable.update({ where: { projectKey: "a-1" }, data: { projectDesc: half } });
+		await scoreOneProject(t.prisma, "a-1", fieldPoints(new Map(), 10), "run-1");
+		const rows = await t.prisma.projectScoreByFieldTable.findMany({
+			where: { projectKey: "a-1" },
+			select: { fieldName: true, isAwarded: true, pointsAwarded: true, pointsAvailable: true },
+		});
+		expect(rows.find((r) => r.fieldName === "ProjectTable.projectDesc")).toMatchObject({ isAwarded: true, pointsAwarded: 5, pointsAvailable: 10 });
+		for (const r of rows) {
+			expect(r.pointsAwarded, r.fieldName).toBeGreaterThanOrEqual(0);
+			expect(r.pointsAwarded, r.fieldName).toBeLessThanOrEqual(r.pointsAvailable);
+		}
+		const project = await t.prisma.projectTable.findUniqueOrThrow({ where: { projectKey: "a-1" }, select: { scorePointsScored: true, scorePointsAvailable: true } });
+		expect(project).toEqual({
+			scorePointsScored: rows.reduce((n, r) => n + r.pointsAwarded, 0),
+			scorePointsAvailable: rows.reduce((n, r) => n + r.pointsAvailable, 0),
+		});
 	});
 
 	it("RECORD_KEY names each scored table's primary key as Postgres has it", async () => {

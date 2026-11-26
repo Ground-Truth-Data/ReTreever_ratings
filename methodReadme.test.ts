@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { describe, expect, it } from "vitest";
 import { RATING_STATE_FLOORS, RATING_STATES } from "$parent/siblings/ReTreever_who_what/lib/rating/ratingState";
 import { fieldPoints, OFFERED } from "./projectScore";
+import config from "./scoreConfig.json" with { type: "json" };
 import { matrixPoints, SCORE_MATRIX } from "./scoreMatrix";
 
 // The README is the method an outsider reads: its weights, what it says a
@@ -32,12 +33,12 @@ describe("README matches the code", () => {
 	});
 
 	it("lists every table a project is offered, its fields and one record's points", () => {
-		const points = fieldPoints(matrixPoints(), 1);
+		const points = fieldPoints(matrixPoints(), config.defaults.fieldPoints);
 		const offered = Object.entries(OFFERED).map(([table, fields]) => [`\`${table}\``, String(fields.length), String(fields.reduce((sum, f) => sum + points(f), 0))]);
 		expect(tableUnder("What a project is offered")).toEqual(offered);
-		// The least any project is offered: one record of each, and the source baseline's 6.
-		const least = offered.reduce((sum, [, , p]) => sum + Number(p), 0) + 6;
-		expect(readme).toContain(`offered at least ${least} points`);
+		// The least any project is offered: one record of each, and the source baseline's six fields.
+		const least = offered.reduce((sum, [, , p]) => sum + Number(p), 0) + 6 * config.defaults.fieldPoints;
+		expect(readme).toContain(`offered at least ${least.toLocaleString("en")} points`);
 	});
 
 	it("states the bands ratingState draws, in order", () => {

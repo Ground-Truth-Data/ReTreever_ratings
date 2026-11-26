@@ -56,28 +56,29 @@ weights that made it.
 A project is scored on everything it could have disclosed. Each table below
 lists the fields one record offers (`OFFERED`, `projectScore.ts`). Every field
 of every record the project has is checked: is it filled? A filled field earns
-its points; the score is the points earned over the points offered, from 0 to 1.
+its points, a description as much of them as it says (below); the score is the
+points earned over the points offered, from 0 to 1.
 
 **A table with no record still offers one record's worth, and earns none of
-it.** A project that published no planting record scores 0 of 16 there; it is
-not left out of the sum. So every project is offered at least 126 points, and
+it.** A project that published no planting record scores 0 of 160 there; it is
+not left out of the sum. So every project is offered at least 1,260 points, and
 missing data costs points.
 
 ### What a project is offered
 
 | Table | Fields | Points for one record |
 |---|---|---|
-| `ProjectTable` | 5 | 5 |
-| `LandTable` | 6 | 14 |
-| `PolygonTable` | 6 | 25 |
-| `CropTable` | 6 | 14 |
-| `SpeciesTable` | 5 | 5 |
-| `PlantingTable` | 8 | 16 |
-| `MiscTable` | 14 | 14 |
-| `StakeholderTable` | 1 | 2 |
-| `OrganizationTable` | 9 | 9 |
-| `ClaimTable` | 4 | 4 |
-| `SurveyTable` | 4 | 12 |
+| `ProjectTable` | 5 | 50 |
+| `LandTable` | 6 | 140 |
+| `PolygonTable` | 6 | 250 |
+| `CropTable` | 6 | 140 |
+| `SpeciesTable` | 5 | 50 |
+| `PlantingTable` | 8 | 160 |
+| `MiscTable` | 14 | 140 |
+| `StakeholderTable` | 1 | 20 |
+| `OrganizationTable` | 9 | 90 |
+| `ClaimTable` | 4 | 40 |
+| `SurveyTable` | 4 | 120 |
 
 A test holds this table equal to `OFFERED` and the weights.
 
@@ -103,31 +104,58 @@ A field counts as filled only when it holds a value. These do not:
 - a `geometry` that is not a real polygon: a point, an empty shape or a ring
   that encloses no area proves no site.
 
-Sources (`SourceTable`) are scored on six baseline fields, 6 points. One
+Sources (`SourceTable`) are scored on six baseline fields, 60 points. One
 source per kind of link (`urlType`) counts, so a project's hundredth photo
-earns what its first did: volume cannot buy a score. The fullest source is
-offered all six; each further kind adds only the fields it fills. A project
-with no source is offered the six and earns none.
+earns what its first did: volume cannot buy a score. The source that earns the
+most is offered all six; each further kind adds only what its fields earn, to
+the points earned and offered alike, so it can never lower the score. A
+project with no source is offered the six and earns none.
+
+### A description earns for how much it says
+
+Five free-text fields earn part of their points by their words, up to a cap:
+a text earns its share of the cap, rounded up to a whole point, so any filled
+text earns something and one at or past the cap earns all of it. Twice the cap
+earns no more. Words are what is left once tags and `&nbsp;` read as spaces,
+each holding a letter or digit; markup and punctuation alone are no words, and
+a text that is not filled (above) earns nothing. The caps (`WORD_CAPS`,
+`projectScore.ts`) are each field's 90th percentile of filled values on
+26 Nov 2026, across every platform:
+
+| Field | Words for full points |
+|---|---|
+| `ProjectTable.projectDesc` | 310 |
+| `LandTable.landDesc` | 170 |
+| `OrganizationTable.organizationDesc` | 250 |
+| `CropTable.cropDesc` | 100 |
+| `SourceTable.sourceDesc` | 30 |
+
+Every other field is whole or nothing: a name, number, coordinate, date, id,
+code or flag says no more for being longer. So are the impact `…Source`
+fields, which most platforms fill with a pick from a list, and a project's
+reviews, whose words are their volume.
 
 ### The weights
 
 `scoreMatrix.ts` is the whole weighting, in one table. An offered field it
-does not list is worth 1 point.
+does not list is worth 10 points (`defaults.fieldPoints`, `scoreConfig.json`).
+Ten points are the unit, so a description graded by its words earns whole
+points.
 
 | Field | Points |
 |---|---|
-| `geometry` | 20 |
-| `latitude` | 5 |
-| `longitude` | 5 |
-| `cropName` | 5 |
-| `speciesName` | 5 |
-| `plantingDt` | 5 |
-| `plotCenter` | 5 |
-| `radius` | 5 |
-| `plantedQty` | 3 |
-| `stakeholderCategory` | 2 |
-| `pricePerUnit` | 2 |
-| `pricePerUnitUSD` | 2 |
+| `geometry` | 200 |
+| `latitude` | 50 |
+| `longitude` | 50 |
+| `cropName` | 50 |
+| `speciesName` | 50 |
+| `plantingDt` | 50 |
+| `plotCenter` | 50 |
+| `radius` | 50 |
+| `plantedQty` | 30 |
+| `stakeholderCategory` | 20 |
+| `pricePerUnit` | 20 |
+| `pricePerUnitUSD` | 20 |
 
 A test holds this table equal to `SCORE_MATRIX`.
 

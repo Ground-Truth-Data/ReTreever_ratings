@@ -1,7 +1,8 @@
 /**
  * The live weights. ScoreMatrixTable is a mirror of this file, rewritten from
  * it at the start of every score run; retuning a weight is a commit here.
- * Fields not listed default to 1 point (scoreConfig.json).
+ * Fields not listed default to 10 points (scoreConfig.json): ten to the unit, so
+ * a field graded by its words earns whole points.
  */
 
 import crypto from "node:crypto";
@@ -11,28 +12,28 @@ export const SCORE_MATRIX: Record<
 	{ points: number; description: string }
 > = {
 	// Proves the site physically exists.
-	geometry: { points: 20, description: "GeoJSON polygon data" },
+	geometry: { points: 200, description: "GeoJSON polygon data" },
 
-	latitude: { points: 5, description: "GPS coordinate" },
-	longitude: { points: 5, description: "GPS coordinate" },
-	cropName: { points: 5, description: "Species identification" },
+	latitude: { points: 50, description: "GPS coordinate" },
+	longitude: { points: 50, description: "GPS coordinate" },
+	cropName: { points: 50, description: "Species identification" },
 	// A crop's species is the one the join links it to; recordsOf sets it on the crop.
-	speciesName: { points: 5, description: "Species identification" },
-	plantingDt: { points: 5, description: "Temporal data" },
-	plotCenter: { points: 5, description: "Circular plot geometry" },
-	radius: { points: 5, description: "Circular plot geometry" },
+	speciesName: { points: 50, description: "Species identification" },
+	plantingDt: { points: 50, description: "Temporal data" },
+	plotCenter: { points: 50, description: "Circular plot geometry" },
+	radius: { points: 50, description: "Circular plot geometry" },
 
-	plantedQty: { points: 3, description: "Quantified impact" },
+	plantedQty: { points: 30, description: "Quantified impact" },
 
-	stakeholderCategory: { points: 2, description: "Stakeholder classification" },
-	pricePerUnit: { points: 2, description: "Economic data" },
-	pricePerUnitUSD: { points: 2, description: "Economic data" },
+	stakeholderCategory: { points: 20, description: "Stakeholder classification" },
+	pricePerUnit: { points: 20, description: "Economic data" },
+	pricePerUnitUSD: { points: 20, description: "Economic data" },
 };
 
 /** Bumped when the method itself changes meaning — what counts as a field,
  * a tier, a baseline — not when a weight moves; a weight change is in
  * `matrixHash`. */
-export const METHODOLOGY_VERSION = "3";
+export const METHODOLOGY_VERSION = "4";
 
 /** The weights as the scorer applies them: field → points. */
 export function matrixPoints(): Map<string, number> {
