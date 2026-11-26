@@ -53,6 +53,12 @@ describe("populated: a value by its type", () => {
 		["plotCenter", {}, false],
 		["plotCenter", { lat: 1, lon: 2 }, true],
 		["speciesIds", [], false],
+		["landDesc", "<p><br></p>", false],
+		["landDesc", "<p>&nbsp;</p>", false],
+		["landDesc", "<p>n/a</p>", false],
+		["landDesc", "<div><span></span></div>", false],
+		["landDesc", "<p>Plot 4</p>", true],
+		["landDesc", "a < b", true],
 	])("%s = %j → %s", (field, value, expected) => {
 		expect(populated(field, value)).toBe(expected);
 	});

@@ -136,6 +136,9 @@ export const PLACEHOLDER_TEXT: ReadonlySet<string> = new Set([
 	"tbd", "tba", "not available", "not specified", "not provided",
 ]);
 
+/** Text with its tags and `&nbsp;` read as spaces, so markup alone says nothing; no other entity is decoded. */
+export const unmarked = (text: string): string => text.replace(/<[^>]+>|&nbsp;/g, " ");
+
 /** A coordinate of exactly 0 is Null Island: the default, not a place. */
 const COORDINATE_FIELDS = new Set(["latitude", "longitude"]);
 /** A size of 0 or less measures nothing. Not `hectaresCalc`: it is derived
@@ -191,7 +194,7 @@ const asNumber = (value: unknown): number | null =>
 			: null;
 
 /**
- * Whether a field holds a value, by its type: null, blank or placeholder
+ * Whether a field holds a value, by its type: null, blank, markup-only or placeholder
  * text (measured on dev 12 Nov: "[]", "...", "-", "n/a"), an empty object or list, an invalid date, a non-finite number, a
  * coordinate of 0 or a size of 0 or less is not one, and `geometry` is one
  * only as a real polygon. Booleans always are.
@@ -200,7 +203,7 @@ export function populated(fieldName: string, value: unknown): boolean {
 	if (value === null || value === undefined) return false;
 	if (fieldName === "geometry") return isRealPolygon(value);
 	if (typeof value === "string") {
-		const text = value.trim().toLowerCase();
+		const text = unmarked(value).trim().toLowerCase();
 		return /[\p{L}\p{N}]/u.test(text) && !PLACEHOLDER_TEXT.has(text);
 	}
 	if (value instanceof Date) return !Number.isNaN(value.getTime());
